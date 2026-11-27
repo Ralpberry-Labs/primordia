@@ -1,7 +1,7 @@
 // Wires the world, renderer and UI together.
 import { World, RULES, defaultRules } from './world.js';
 import { Renderer, drawPortrait } from './render.js';
-import { GENES, INT_GENES, N_IN, N_OUT, H_MAX, MAX_EYES, CH, CH_NAMES, O_IH, O_HO, OUT_NAMES, SENSE_NAMES, serializeGenome, deserializeGenome } from './genome.js';
+import { GENES, INT_GENES, N_IN, N_OUT, H_MAX, MAX_EYES, CH, CH_NAMES, O_IH, O_HO, OUT_NAMES, SENSE_NAMES, OUT, TRAITS, LOCI, serializeGenome, deserializeGenome, heterozygosity } from './genome.js';
 import { createBrain } from './brain.js';
 import { setSeed, hsl, clamp } from './util.js';
 
@@ -17,11 +17,11 @@ const state = {
 
 function loadRules() {
   const r = defaultRules();
-  try { Object.assign(r, JSON.parse(localStorage.getItem('primordia.v2.rules') || '{}')); } catch {}
+  try { Object.assign(r, JSON.parse(localStorage.getItem('primordia.v3.rules') || '{}')); } catch {}
   for (const k in r) if (!(k in RULES)) delete r[k];
   return r;
 }
-function saveRules() { try { localStorage.setItem('primordia.v2.rules', JSON.stringify(state.rules)); } catch {} }
+function saveRules() { try { localStorage.setItem('primordia.v3.rules', JSON.stringify(state.rules)); } catch {} }
 
 // ---------- world lifecycle ----------
 function newWorld(seed, sizeKey = 'm', founders = 6) {
@@ -90,7 +90,10 @@ function updateHUD() {
     `<span class="chip"><span class="dot" style="background:#8fe3b8"></span><span class="k">Life</span><b>${w.creatures.length}</b></span>`,
     `<span class="chip"><span class="k">Species</span><b>${living}</b></span>`,
     `<span class="chip opt"><span class="k">Gen</span><b>${w.maxGen}</b></span>`,
-    `<span class="chip"><span class="k">▦ Walls</span><b>${fmt(w.blockCount)}</b></span>`,
+    `<span class="chip"><span class="k">${{ clear: '☀', showers: '🌦', rain: '🌧', storm: '⛈', drought: '🏜', wildfire: '🔥' }[w.climate.state] || '☀'} ${w.climate.state}</span><b>${w.climate.temp(state.renderer.cam.x, state.renderer.cam.y).toFixed(0)}°C</b></span>`,
+    `<span class="chip"><span class="k">▦ Blocks</span><b>${fmt(w.blockCount)}</b></span>`,
+    w.nAqua ? `<span class="chip opt"><span class="k">🐟</span><b>${w.nAqua}</b></span>` : '',
+    w.rules.smartSelect ? `<span class="chip opt"><span class="k">🧠 purged</span><b>${fmt(w.purged)}</b></span>` : '',
     `<span class="chip opt"><span class="k">Groups</span><b>${w.groups.length}</b></span>`,
     w.sickCount > 5 ? `<span class="chip opt"><span class="dot" style="background:#b6dc3c"></span><span class="k">Sick</span><b>${w.sickCount}</b></span>` : '',
     `<span class="chip opt"><span class="k">IQ</span><b>${iq.toFixed(0)}</b></span>`,
@@ -142,7 +145,7 @@ function drawPopChart() {
     for (let i = 0; i < n; i++) base[i] += hist[i].counts[id] || 0;
   }
   const h = hist[n - 1];
-  $('#popLegend').innerHTML = `<span><i style="background:#8fe3b8"></i>${h.herb} grazers</span><span><i style="background:#ffc78a"></i>${h.omni} omni</span><span><i style="background:#ff8a8a"></i>${h.carn} hunters</span>`;
+  $('#popLegend').innerHTML = `<span><i style="background:#8fe3b8"></i>${h.herb} grazers</span><span><i style="background:#ff8a8a"></i>${h.carn} hunters</span><span><i style="background:#7fb8ff"></i>${h.fish || 0} aquatic</span>`;
 }
 function drawTraitChart() {
   const cv = $('#traitChart'); if (!cv.clientWidth) return;
@@ -249,7 +252,7 @@ function showInspector(c) {
   drawPortrait($('#portrait'), c.g);
   const genes = [];
   for (const k in GENES) {
-    if (k === 'hue' || k === 'hue2') continue;
+    if (k === 'hue' || k === 'hue2' || k === 'pref') continue;
     const d = GENES[k], v = c.g[k];
     const shown = k === 'lifespan' || k === 'vision' ? v.toFixed(0) : k === 'fov' ? (v * 57.3).toFixed(0) + '°' : v.toFixed(2);
     genes.push(`<div class="gene"><div class="gk">${d.label}<b>${shown}</b></div><div class="gt"><i style="width:${((v - d.min) / (d.max - d.min)) * 100}%"></i></div></div>`);
@@ -258,6 +261,9 @@ function showInspector(c) {
     const d = INT_GENES[k], v = c.g[k];
     genes.push(`<div class="gene"><div class="gk">${d.label}<b>${v}</b></div><div class="gt"><i style="width:${((v - d.min) / (d.max - d.min)) * 100}%"></i></div></div>`);
   }
+  // chromosomes: each square is one allele (gene copy), coloured by its value; top strand = mother's copy, bottom = father's
+  const dna = c.g.dna, strand = (arr) => Array.from(arr, (v, i) => `<i style="background:hsl(${TRAITS[(i / LOCI) | 0] === 'hue' || TRAITS[(i / LOCI) | 0] === 'hue2' || TRAITS[(i / LOCI) | 0] === 'pref' ? v * 360 : 200 - v * 170},${60}%,${35 + v * 30}%)"></i>`).join('');
+  genes.push(`<div class="dna"><div class="muted">Chromosomes — ${TRAITS.length} traits × ${LOCI} genes, two copies each</div><div class="strand">${strand(dna.A)}</div><div class="strand">${strand(dna.B)}</div></div>`);
   $('#ciGenes').innerHTML = genes.join('');
   updateInspector();
   if (window.innerWidth > 820 || !document.body.classList.contains('panel-hidden')) switchTab('creature');
@@ -278,7 +284,13 @@ function updateInspector() {
     bar('Carrying', c.carry, 1, '#c9a26b', c.carry >= 1 ? 'block' : Math.round(c.carry * 100) + '%') +
     bar('Shelter', c.shelter, 1, '#b8a4ff', Math.round(c.shelter * 100) + '%') +
     [...state.brain.memory(c.slot)].map((v, i) => bar('Memory ' + (i + 1), Math.abs(v), 1, v >= 0 ? '#ffc78a' : '#9fb7ff', v.toFixed(2))).join('') +
-    bar('Learned', Math.min(1, state.brain.drift(c.slot, c.g) * 4), 1, '#ff9fd0', (state.brain.drift(c.slot, c.g) * 100).toFixed(1) + '% rewired');
+    bar('Learned', Math.min(1, state.brain.drift(c.slot, c.g) * 4), 1, '#ff9fd0', (state.brain.drift(c.slot, c.g) * 100).toFixed(1) + '% rewired') +
+    bar('Dopamine', Math.abs(state.brain.DELTA[c.slot]), 1, state.brain.DELTA[c.slot] >= 0 ? '#ffd36b' : '#7f9cff', (state.brain.DELTA[c.slot] >= 0 ? '+' : '') + state.brain.DELTA[c.slot].toFixed(2)) +
+    bar('Expects', (state.brain.outputs(c.slot)[OUT.value] + 1) / 2, 1, '#e7b4ff', state.brain.outputs(c.slot)[OUT.value].toFixed(2)) +
+    bar('Voice', Math.max(Math.abs(c.v1), Math.abs(c.v2)), 1, '#ffb070', `${c.v1.toFixed(2)} / ${c.v2.toFixed(2)}`) +
+    bar('Height', c.z, 4, '#c9b8a0', `level ${c.z}`) +
+    bar('Body temp', clamp((c.temp + 10) / 50, 0, 1), 1, c.temp > 27 - 30 * c.g.fur + 7 ? '#ff8a6a' : c.temp < 27 - 30 * c.g.fur - 7 ? '#7fb8ff' : '#8fe3b8', `${c.temp.toFixed(0)}°C (likes ${(27 - 30 * c.g.fur).toFixed(0)})`) +
+    bar('Genes mixed', heterozygosity(c.g), 1, '#a0e0d0', Math.round(heterozygosity(c.g) * 100) + '% heterozygous');
   $('#ciBrain').textContent = `${c.brain.neurons} neurons · ${c.brain.synapses} synapses · IQ ${c.brain.iq} · ${state.brain.kind.split(' ')[0]}`;
   drawBrain(c);
 }
@@ -446,12 +458,13 @@ function useTool(sx, sy) {
       else w.spawnAt(x, y, null);
       break;
     case 'meteor': w.meteor(x, y); break;
+    case 'fire': w.climate.ignite(x, y); toast('Fire!'); break;
   }
 }
 function setTool(t) {
   state.tool = t;
   $$('.tool').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
-  const tips = { inspect: 'Tap a creature to inspect it.', food: 'Tap to scatter fruit.', tree: 'Tap land to plant a fruit tree.', spawn: state.cloneGenome ? 'Tap to release the clones.' : 'Tap to seed a brand-new species.', meteor: 'Tap to call down a meteor.' };
+  const tips = { inspect: 'Tap a creature to inspect it.', food: 'Tap to scatter fruit.', tree: 'Tap land to plant a fruit tree.', spawn: state.cloneGenome ? 'Tap to release the clones.' : 'Tap to seed a brand-new species.', meteor: 'Tap to call down a meteor.', fire: 'Tap dry land to start a fire.' };
   toast(tips[t]);
 }
 function togglePlay() {
@@ -470,22 +483,22 @@ function saveWorld() {
   const data = {
     v: 1, seed: w.seed, W: w.W, H: w.H, tick: w.tick, rules: state.rules,
     trees: w.trees.map(({ x, y, r, seed, hue, fruitHue }) => ({ x, y, r, seed, hue, fruitHue })),
-    blocks: (() => { const a = []; for (let b = 0; b < w.bOwner.length; b++) if (w.bOwner[b] > 0) a.push(b, w.bOwner[b], Math.round(w.bHp[b])); return a; })(),
+    blocks: (() => { const a = []; for (let b = 0; b < w.bOwner.length; b++) if (w.bOwner[b] > 0) a.push(b, w.bOwner[b], Math.round(w.bHp[b]), w.bH[b]); return a; })(),
     species: [...w.species.values()].filter((s) => s.count > 0).map((s) => ({ ...s, rep: serializeGenome(s.rep) })),
     creatures: w.creatures.map((c) => ({ x: c.x, y: c.y, a: c.a, e: c.energy, age: c.age, gen: c.gen, sp: c.sp, g: serializeGenome(c.g) })),
   };
-  try { localStorage.setItem('primordia.v2.save', JSON.stringify(data)); toast(`Saved ${data.creatures.length} creatures.`); }
+  try { localStorage.setItem('primordia.v3.save', JSON.stringify(data)); toast(`Saved ${data.creatures.length} creatures.`); }
   catch { toast('Could not save here (storage full or blocked).'); }
 }
 function loadWorld() {
   let data;
-  try { data = JSON.parse(localStorage.getItem('primordia.v2.save')); } catch {}
+  try { data = JSON.parse(localStorage.getItem('primordia.v3.save')); } catch {}
   if (!data) { toast('No saved world yet.'); return; }
   setSeed(data.seed);
   Object.assign(state.rules, data.rules);
   if (state.world) for (const c of state.world.creatures) state.brain.release(c.slot);
   const w = new World({ W: data.W, H: data.H, seed: data.seed, rules: state.rules, brain: state.brain });
-  if (data.blocks) { for (let i = 0; i < data.blocks.length; i += 3) { const b = data.blocks[i]; w.bOwner[b] = data.blocks[i + 1]; w.bHp[b] = data.blocks[i + 2]; if (data.blocks[i + 1] > 0) w.blockCount++; } }
+  if (data.blocks) { for (let i = 0; i < data.blocks.length; i += 4) { const b = data.blocks[i]; w.bOwner[b] = data.blocks[i + 1]; w.bHp[b] = data.blocks[i + 2]; w.bH[b] = data.blocks[i + 3] || 1; w.blockCount += w.bH[b]; } }
   w.tick = data.tick;
   for (const t of data.trees) w.trees.push({ ...t, timer: 100 });
   for (let i = 0; i < w.rules.maxPlants * 0.6; i++) w.spawnPlant();
@@ -496,7 +509,7 @@ function loadWorld() {
     const cr = w.spawn(deserializeGenome(c.g), c.x, c.y, sp, c.gen, null, c.e);
     cr.a = c.a; cr.age = c.age;
   }
-  for (let b = 0; b < w.bOwner.length; b++) { const sp = w.species.get(w.bOwner[b]); if (sp) sp.blocks++; }
+  for (let b = 0; b < w.bOwner.length; b++) { const sp = w.species.get(w.bOwner[b]); if (sp) sp.blocks += w.bH[b]; }
   w.log('A saved world awakens.', 140);
   state.world = w; state.selected = null; state.renderer.setWorld(w);
   buildRules(); toast('World loaded.');
@@ -528,6 +541,9 @@ function bindUI() {
   $('#evBloom').onclick = () => { state.world.bloom(); toast('A great bloom!'); };
   $('#evPlague').onclick = () => { state.world.plague(); toast('Plague strikes the most common species.'); };
   $('#evMeteor').onclick = () => { const w = state.world; w.meteor(Math.random() * w.W, Math.random() * w.H); };
+  $('#evStorm').onclick = () => { state.world.storm(); toast('Storm clouds gather…'); };
+  $('#evDrought').onclick = () => { state.world.drought(); toast('A drought begins.'); };
+  $('#btnLayer').onclick = () => { const L = ['none', 'moisture', 'temperature']; const r = state.renderer; r.layer = L[(L.indexOf(r.layer) + 1) % L.length]; r.cv2 = -1; toast(r.layer === 'none' ? 'Map: normal' : r.layer === 'moisture' ? 'Map: soil moisture (blue = wet, brown = dry)' : 'Map: temperature (blue = cold, red = hot)'); };
   $('#evWinter').onclick = () => { state.world.winter(); toast('A bitter cold snap!'); };
   $('#evFounders').onclick = () => { const w = state.world; for (let i = 0; i < 2; i++) w.foundSpecies(14); toast('New founders arrive.'); };
   $('#foundIn').oninput = (e) => { $('#foundOut').textContent = e.target.value; };

@@ -2,6 +2,7 @@
 import { TAU, clamp, hslToRgb, rgb, hsl, makeNoise } from './util.js';
 import { bodyMask } from './genome.js';
 import { TERRAIN_RES, BS } from './world.js';
+import { WC } from './climate.js';
 
 const SP = 2; // sprite sub-pixels per body pixel
 
@@ -14,7 +15,7 @@ export function makeCreatureSprite(g) {
   const dark = hslToRgb(g.hue, g.sat * 0.9, g.light * 0.55);
   const lite = hslToRgb(g.hue, g.sat * 0.7, Math.min(0.92, g.light * 1.35));
   const pat = hslToRgb(g.hue2, Math.min(1, g.sat + 0.1), clamp(g.light * 0.85, 0.25, 0.7));
-  const outline = hslToRgb(g.hue, 0.5, 0.12 + g.armor * 0.1);
+  const outline = g.fur > 0.62 ? hslToRgb(g.hue, 0.2, 0.78) : hslToRgb(g.hue, 0.5, 0.12 + g.armor * 0.1);
   const armorC = hslToRgb(g.hue, 0.15, 0.55 + g.armor * 0.15);
   // eye slots: front-most filled pixels, symmetric
   const slots = [];
@@ -170,7 +171,7 @@ function makeTreeSprite(t) {
   return cv;
 }
 
-// ---------- terrain bake ----------
+// ---------- terrain bake (with hill-shading for 3D relief) ----------
 function bakeTerrain(world) {
   const { tw, th, ttype, fert, elev } = world;
   const cv = document.createElement('canvas'); cv.width = tw; cv.height = th;
@@ -187,11 +188,16 @@ function bakeTerrain(world) {
     else if (t === 3) { h = 95 - f * 10; s = 0.36 + f * 0.1; l = 0.48 - f * 0.08; }
     else if (t === 4) { h = 118; s = 0.36; l = 0.3 - (f - 0.8) * 0.1; }
     else { h = 32; s = 0.14; l = 0.5 + (e - 0.79) * 0.8 + (n(x * 0.3, y * 0.3, 3) - 0.5) * 0.12; }
+    // hill-shade: light from the north-west on the land surface
+    if (t > 1) {
+      const ex = elev[y * tw + Math.min(tw - 1, x + 1)] - elev[y * tw + Math.max(0, x - 1)];
+      const ey = elev[Math.min(th - 1, y + 1) * tw + x] - elev[Math.max(0, y - 1) * tw + x];
+      l = l - (ex + ey) * 9 + Math.max(0, e - 0.44) * 0.12;
+    }
     let col = hslToRgb(h, s, clamp(l + dn, 0.05, 0.95));
-    // decorations: flowers & tufts
     const r = (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
     const rv = r < 0 ? r + 1 : r;
-    if (t === 3 && rv < 0.0018 && f > 0.5) col = rv < 0.0012 ? [244, 211, 94] : rv < 0.0024 ? [244, 151, 182] : [235, 240, 250];
+    if (t === 3 && rv < 0.0018 && f > 0.5) col = rv < 0.0012 ? [244, 211, 94] : [244, 151, 182];
     if ((t === 3 || t === 4) && rv > 0.9) col = hslToRgb(h, s, l - 0.05);
     if (t === 1 && rv > 0.985) col = [200, 235, 240];
     const o = i * 4; id.data[o] = col[0]; id.data[o + 1] = col[1]; id.data[o + 2] = col[2]; id.data[o + 3] = 255;
@@ -200,14 +206,19 @@ function bakeTerrain(world) {
   return cv;
 }
 
+export const LZ = 6;   // screen units per stacked level (oblique 2.5D projection)
+
 export class Renderer {
   constructor(canvas, world) {
     this.cv = canvas; this.ctx = canvas.getContext('2d');
     this.cam = { x: 0, y: 0, zoom: 1 };
     this.plantSprites = makePlantSprites();
+    this.algaeSprite = makeAlgaeSprite();
     this.meatSprite = makeMeatSprite();
     this.fruitSprites = {};
-    this.showGroups = true; this.showVision = true;
+    this.showGroups = true; this.showVision = true; this.showClouds = true;
+    this.layer = 'none';
+    this.climCv = document.createElement('canvas');
     this.setWorld(world);
   }
   setWorld(w) {
@@ -215,6 +226,10 @@ export class Renderer {
     this.terrain = bakeTerrain(w);
     this.tv = w.terrainVersion;
     for (const t of w.trees) t.sprite = null;
+    this.climCv.width = w.climate.cw; this.climCv.height = w.climate.ch;
+    this.cloudCv = document.createElement('canvas'); this.cloudCv.width = w.climate.cw; this.cloudCv.height = w.climate.ch;
+    this.cv2 = -1;
+    this._wallPal = new Map();
     this.fit();
   }
   resize() {
@@ -251,39 +266,76 @@ export class Renderer {
     this.clampCam();
   }
 
+  // low-res climate images: clouds, and the optional map layer (moisture/temperature/fire)
+  bakeClimate() {
+    const w = this.world, cl = w.climate;
+    if (this.cv2 === cl.version) return;
+    this.cv2 = cl.version;
+    const n = cl.cw * cl.ch;
+    const cc = this.cloudCv.getContext('2d'), ci = cc.createImageData(cl.cw, cl.ch);
+    for (let i = 0; i < n; i++) {
+      const v = cl.cloud[i], rain = cl.rain[i];
+      const g = 255 - rain * 110;
+      ci.data[i * 4] = g; ci.data[i * 4 + 1] = g; ci.data[i * 4 + 2] = g + rain * 20; ci.data[i * 4 + 3] = v * 200;
+    }
+    cc.putImageData(ci, 0, 0);
+    const lc = this.climCv.getContext('2d'), li = lc.createImageData(cl.cw, cl.ch);
+    for (let i = 0; i < n; i++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      if (this.layer === 'moisture') { const m = cl.moist[i]; r = 200 - m * 180; g = 150 + m * 40; b = 60 + m * 190; a = cl.water[i] > 0.6 ? 0 : 150; }
+      else if (this.layer === 'temperature') {
+        const x = (i % cl.cw) * WC + WC / 2, y = ((i / cl.cw) | 0) * WC + WC / 2;
+        const T = cl.temp(x, y), u = clamp((T + 5) / 40, 0, 1);
+        r = 40 + u * 215; g = 90 + (1 - Math.abs(u - 0.5) * 2) * 120; b = 255 - u * 215; a = 140;
+      } else {
+        // default: drought browns the land, ash blackens it
+        const m = cl.moist[i];
+        if (cl.water[i] < 0.5 && m < 0.35) { r = 190; g = 160; b = 80; a = (0.35 - m) * 300; }
+        if (cl.ash[i] > 0.05) { r = 40; g = 32; b = 28; a = Math.max(a, cl.ash[i] * 150); }
+      }
+      li.data[i * 4] = r; li.data[i * 4 + 1] = g; li.data[i * 4 + 2] = b; li.data[i * 4 + 3] = a;
+    }
+    lc.putImageData(li, 0, 0);
+  }
+
   draw(frame, selected) {
-    const w = this.world, ctx = this.ctx, c = this.cam, dpr = this.dpr;
+    const w = this.world, ctx = this.ctx, c = this.cam, dpr = this.dpr, cl = w.climate;
     if (w.terrainVersion !== this.tv) { this.terrain = bakeTerrain(w); this.tv = w.terrainVersion; }
+    this.bakeClimate();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#0d1d2b';
     ctx.fillRect(0, 0, this.cv.width, this.cv.height);
     const z = c.zoom * dpr;
-    ctx.setTransform(z, 0, 0, z, (this.vw / 2 - c.x * c.zoom) * dpr, (this.vh / 2 - c.y * c.zoom) * dpr);
+    const worldT = () => ctx.setTransform(z, 0, 0, z, (this.vw / 2 - c.x * c.zoom) * dpr, (this.vh / 2 - c.y * c.zoom) * dpr);
+    worldT();
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(this.terrain, 0, 0, w.tw * TERRAIN_RES, w.th * TERRAIN_RES);
+    // drought / ash / map layer
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = this.layer === 'none' ? 0.55 : 0.85;
+    ctx.drawImage(this.climCv, 0, 0, cl.cw * WC, cl.ch * WC);
+    ctx.globalAlpha = 1;
+    ctx.imageSmoothingEnabled = false;
     const vx0 = c.x - this.vw / 2 / c.zoom - 40, vx1 = c.x + this.vw / 2 / c.zoom + 40;
-    const vy0 = c.y - this.vh / 2 / c.zoom - 40, vy1 = c.y + this.vh / 2 / c.zoom + 40;
+    const vy0 = c.y - this.vh / 2 / c.zoom - 40, vy1 = c.y + this.vh / 2 / c.zoom + 60;
     const inView = (x, y) => x > vx0 && x < vx1 && y > vy0 && y < vy1;
 
-    // water shimmer
     if (c.zoom > 0.6) {
       ctx.fillStyle = 'rgba(220,245,255,0.35)';
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 80; i++) {
         const x = ((i * 977 + frame * 0.3) % w.W), y = (i * 613 + Math.sin(frame * 0.01 + i) * 20) % w.H;
         if (w.isWater(x, y) && inView(x, y)) ctx.fillRect(x, y, 6, 1.2);
       }
     }
-    // food
+    // ground-level food
     const ps = this.plantSprites;
     for (const f of w.food) {
-      if (!inView(f.x, f.y)) continue;
+      if (f.z > 0 || !inView(f.x, f.y)) continue;
       if (f.type === 0) {
         const s = 3.5 + Math.sqrt(f.e) * 1.3;
-        ctx.drawImage(ps[f.v], f.x - s / 2, f.y - s / 2, s, s);
+        ctx.drawImage(f.aqua ? this.algaeSprite : ps[f.v & 3], f.x - s / 2, f.y - s / 2, s, s);
       } else if (f.type === 1) {
-        let spr = this.fruitSprites[f.hue || 0];
-        if (!spr) { const h = f.hue ?? 10; spr = this.fruitSprites[h] = makeFruitSprite(h); }
-        ctx.drawImage(spr, f.x - 4, f.y - 4, 8, 8);
+        ctx.drawImage(this.fruit(f.hue), f.x - 4, f.y - 4, 8, 8);
       } else {
         const s = 3 + Math.sqrt(f.e) * 0.5;
         ctx.globalAlpha = clamp(f.e / 20, 0.35, 1);
@@ -291,164 +343,280 @@ export class Renderer {
         ctx.globalAlpha = 1;
       }
     }
-    // trees: shadow + trunk + canopy
-    for (const t of w.trees) {
-      if (!inView(t.x, t.y)) continue;
-      if (!t.sprite) t.sprite = makeTreeSprite(t);
-      ctx.fillStyle = 'rgba(10,25,15,0.28)';
-      ctx.beginPath(); ctx.ellipse(t.x + 6, t.y + 8, t.r * 1.05, t.r * 0.8, 0, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#5a3d27'; ctx.fillRect(t.x - 2, t.y, 4, t.r * 0.6);
-      const S = t.sprite.width * 2;
-      ctx.drawImage(t.sprite, t.x - S / 2, t.y - S / 2 - 4, S, S);
+    // cloud shadows drift across the ground
+    if (this.showClouds && w.rules.rainfall > 0) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.globalAlpha = 0.22 * (0.4 + w.light * 0.6);
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.drawImage(this.cloudCv, 30, 30, cl.cw * WC, cl.ch * WC);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.imageSmoothingEnabled = false;
     }
-    this.drawWalls(ctx, vx0, vx1, vy0, vy1);
-    // groups
     if (this.showGroups) {
       ctx.lineWidth = 1.2 / c.zoom;
       ctx.setLineDash([4 / c.zoom, 4 / c.zoom]);
       for (const g of w.groups) {
         if (!inView(g.cx, g.cy)) continue;
         const sp = w.species.get(g.sp);
-        ctx.strokeStyle = hsl(sp.hue, 0.7, 0.75, 0.55);
-        ctx.fillStyle = hsl(sp.hue, 0.7, 0.6, 0.06);
+        ctx.strokeStyle = hsl(sp.hue, 0.7, 0.75, 0.45);
+        ctx.fillStyle = hsl(sp.hue, 0.7, 0.6, 0.05);
         ctx.beginPath(); ctx.arc(g.cx, g.cy, g.r, 0, TAU); ctx.fill(); ctx.stroke();
       }
       ctx.setLineDash([]);
     }
-    // vision cone of selected
     if (selected && !selected.dead && this.showVision) {
-      const s = selected, R = s.g.vision * (0.45 + 0.55 * w.light);
+      const s = selected, R = s.g.vision * (0.45 + 0.55 * w.light) * (1 + 0.3 * s.z), sy = s.y - s.z * LZ;
       ctx.fillStyle = 'rgba(255,255,230,0.07)';
       ctx.strokeStyle = 'rgba(255,255,230,0.35)';
       ctx.lineWidth = 1 / c.zoom;
-      ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.arc(s.x, s.y, R, s.a - s.g.fov / 2, s.a + s.g.fov / 2); ctx.closePath(); ctx.fill(); ctx.stroke();
-      // eye sectors
-      for (let e = 1; e < s.g.eyes; e++) {
-        const a = s.a - s.g.fov / 2 + (s.g.fov * e) / s.g.eyes;
-        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x + Math.cos(a) * R, s.y + Math.sin(a) * R); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x, sy); ctx.arc(s.x, sy, R, s.a - s.g.fov / 2, s.a + s.g.fov / 2); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+
+    // ---- depth-sorted pass: walls, trees and creatures drawn back-to-front by row ----
+    const by0 = Math.max(0, (vy0 / BS) | 0), by1 = Math.min(w.bh - 1, (vy1 / BS) | 0);
+    const rows = by1 - by0 + 1;
+    const buckets = this._buckets || (this._buckets = []);
+    for (let r = 0; r < rows; r++) (buckets[r] || (buckets[r] = [])).length = 0;
+    const put = (y, o) => { const r = clamp(((y / BS) | 0) - by0, 0, rows - 1); buckets[r].push(o); };
+    for (const t of w.trees) if (inView(t.x, t.y)) put(t.y, t);
+    for (const cr of w.creatures) if (inView(cr.x, cr.y)) put(cr.y, cr);
+    for (const f of w.food) if (f.z > 0 && inView(f.x, f.y)) put(f.y + 1, f);
+    const bx0 = Math.max(0, (vx0 / BS) | 0), bx1 = Math.min(w.bw - 1, (vx1 / BS) | 0);
+    for (let r = 0; r < rows; r++) {
+      const by = by0 + r;
+      if (w.blockCount) this.drawWallRow(ctx, by, bx0, bx1);
+      for (const o of buckets[r]) {
+        if (o.maxR !== undefined) this.drawTree(ctx, o);
+        else if (o.g) this.drawCreature(ctx, o, frame, c.zoom);
+        else this.drawCanopyFruit(ctx, o);
       }
     }
-    // creatures
-    for (const cr of w.creatures) {
-      if (!inView(cr.x, cr.y)) continue;
-      if (!cr.sprite) cr.sprite = makeCreatureSprite(cr.g);
-      const sp = cr.sprite, S = sp.size * cr.g.size / SP;
-      const moving = Math.abs(cr.vx) + Math.abs(cr.vy) > 0.15;
-      const fr = moving ? ((frame / 8 + cr.id) | 0) % 2 : 0;
-      // shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.18)';
-      ctx.beginPath(); ctx.ellipse(cr.x + 1.5, cr.y + 2.5, cr.radius * 0.9, cr.radius * 0.6, 0, 0, TAU); ctx.fill();
-      ctx.save();
-      ctx.translate(cr.x, cr.y); ctx.rotate(cr.a);
-      const grow = Math.min(1, 0.55 + cr.age / 500);
-      ctx.scale(grow, grow);
-      if (cr.pain > 0.5) ctx.globalAlpha = 0.6 + 0.4 * Math.sin(frame);
-      ctx.drawImage(sp.frames[fr], -S / 2, -S / 2, S, S);
-      if (cr.carry >= 1 && c.zoom > 1.2) { ctx.fillStyle = '#b08a5a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 2.4); ctx.fillStyle = '#e0c49a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 0.8); }
-      ctx.restore();
-      if (cr.sick > 0 && c.zoom > 0.8) { ctx.fillStyle = 'rgba(170,220,60,0.28)'; ctx.beginPath(); ctx.arc(cr.x, cr.y, cr.radius * 1.1, 0, TAU); ctx.fill(); }
-      ctx.globalAlpha = 1;
-    }
+
     if (selected && !selected.dead) {
-      // family ties: parent and living children
+      const sy = selected.y - selected.z * LZ;
       ctx.lineWidth = 1 / c.zoom; ctx.setLineDash([3 / c.zoom, 3 / c.zoom]);
       const par = w.byId.get(selected.parent);
-      if (par) { ctx.strokeStyle = 'rgba(255,220,150,0.7)'; ctx.beginPath(); ctx.moveTo(selected.x, selected.y); ctx.lineTo(par.x, par.y); ctx.stroke(); }
+      if (par) { ctx.strokeStyle = 'rgba(255,220,150,0.7)'; ctx.beginPath(); ctx.moveTo(selected.x, sy); ctx.lineTo(par.x, par.y - par.z * LZ); ctx.stroke(); }
       ctx.strokeStyle = 'rgba(160,230,200,0.7)';
-      for (const k of w.creatures) if (k.parent === selected.id) { ctx.beginPath(); ctx.moveTo(selected.x, selected.y); ctx.lineTo(k.x, k.y); ctx.stroke(); }
+      for (const k of w.creatures) if (k.parent === selected.id) { ctx.beginPath(); ctx.moveTo(selected.x, sy); ctx.lineTo(k.x, k.y - k.z * LZ); ctx.stroke(); }
       ctx.setLineDash([]);
       if (selected.homeX >= 0) { ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.strokeRect(selected.homeX - BS / 2, selected.homeY - BS / 2, BS, BS); }
       ctx.strokeStyle = '#fff6c8'; ctx.lineWidth = 1.5 / c.zoom;
-      ctx.beginPath(); ctx.arc(selected.x, selected.y, selected.radius + 6 + Math.sin(frame * 0.1) * 1.5, 0, TAU); ctx.stroke();
+      ctx.beginPath(); ctx.arc(selected.x, sy, selected.radius + 6 + Math.sin(frame * 0.1) * 1.5, 0, TAU); ctx.stroke();
     }
-    // particles
     for (const p of w.particles) {
       ctx.fillStyle = hsl(p.hue, 0.8, 0.65, clamp(p.life / 25, 0, 1));
       ctx.fillRect(p.x, p.y, p.s, p.s);
     }
-    // night tint + bioluminescent signals
+    // fire
+    if (cl.burning) this.drawFire(ctx, frame, inView);
+    // rain
+    if (this.showClouds && cl.rainFrac > 0 && c.zoom > 0.35) {
+      const wx = Math.cos(cl.windA) * cl.windS * 3;
+      ctx.strokeStyle = 'rgba(200,220,255,0.45)'; ctx.lineWidth = 0.8 / Math.max(1, c.zoom * 0.6);
+      ctx.beginPath();
+      const step = WC;
+      for (let y = Math.floor(vy0 / step) * step; y < vy1; y += step) for (let x = Math.floor(vx0 / step) * step; x < vx1; x += step) {
+        const rn = cl.rain[cl.cellAt(x, y)]; if (rn <= 0) continue;
+        const k = Math.ceil(rn * 5);
+        for (let i = 0; i < k; i++) {
+          const h1 = (x * 13 + y * 7 + i * 101) % 97, ph = (frame * 7 + h1 * 11) % step;
+          const px2 = x + ((h1 * 37) % step), py = y + ph;
+          ctx.moveTo(px2, py); ctx.lineTo(px2 + wx, py + 7);
+        }
+      }
+      ctx.stroke();
+    }
+    // night + lights
     const dark = 1 - w.light;
     if (dark > 0.02) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = `rgba(14,18,52,${dark * 0.62})`;
       ctx.fillRect(0, 0, this.cv.width, this.cv.height);
-      ctx.setTransform(z, 0, 0, z, (this.vw / 2 - c.x * c.zoom) * dpr, (this.vh / 2 - c.y * c.zoom) * dpr);
+      worldT();
     }
     ctx.globalCompositeOperation = 'lighter';
     for (const cr of w.creatures) {
       if (cr.signal < 0.08 || !inView(cr.x, cr.y)) continue;
       const a = cr.signal * (0.12 + dark * 0.5);
-      const R = cr.radius * (2 + cr.signal * 2);
-      const gr = ctx.createRadialGradient(cr.x, cr.y, 0, cr.x, cr.y, R);
+      const R = cr.radius * (2 + cr.signal * 2), sy = cr.y - cr.z * LZ;
+      const gr = ctx.createRadialGradient(cr.x, sy, 0, cr.x, sy, R);
       gr.addColorStop(0, hsl(cr.g.hue2, 0.9, 0.65, a));
       gr.addColorStop(1, hsl(cr.g.hue2, 0.9, 0.5, 0));
       ctx.fillStyle = gr;
-      ctx.fillRect(cr.x - R, cr.y - R, R * 2, R * 2);
+      ctx.fillRect(cr.x - R, sy - R, R * 2, R * 2);
+    }
+    if (cl.burning) {
+      for (let y = Math.max(0, (vy0 / WC) | 0); y <= Math.min(cl.ch - 1, (vy1 / WC) | 0); y++) for (let x = Math.max(0, (vx0 / WC) | 0); x <= Math.min(cl.cw - 1, (vx1 / WC) | 0); x++) {
+        const f = cl.fire[y * cl.cw + x]; if (f <= 0) continue;
+        const X = (x + 0.5) * WC, Y = (y + 0.5) * WC, R = WC * (1 + f);
+        const gr = ctx.createRadialGradient(X, Y, 0, X, Y, R);
+        gr.addColorStop(0, `rgba(255,140,40,${0.25 * f + dark * 0.3})`); gr.addColorStop(1, 'rgba(255,80,20,0)');
+        ctx.fillStyle = gr; ctx.fillRect(X - R, Y - R, R * 2, R * 2);
+      }
     }
     if (dark > 0.3) {
-      // fireflies over fruit trees
       for (const t of w.trees) {
         if (!inView(t.x, t.y)) continue;
         for (let k = 0; k < 3; k++) {
           const ph = frame * 0.02 + t.seed + k * 2.1;
-          const fx = t.x + Math.cos(ph) * (t.r + 10), fy = t.y + Math.sin(ph * 1.3) * (t.r + 6);
+          const fx = t.x + Math.cos(ph) * (t.r + 10), fy = t.y - LZ * 2 + Math.sin(ph * 1.3) * (t.r + 6);
           ctx.fillStyle = `rgba(255,240,150,${(dark - 0.3) * (0.5 + 0.5 * Math.sin(ph * 5))})`;
           ctx.fillRect(fx, fy, 1.6, 1.6);
         }
       }
     }
     ctx.globalCompositeOperation = 'source-over';
+    // clouds (high above, slight parallax)
+    if (this.showClouds && w.rules.rainfall > 0 && c.zoom < 3.5) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.globalAlpha = 0.5 * (1 - Math.min(1, c.zoom / 3.5)) + 0.05;
+      ctx.drawImage(this.cloudCv, 0, -20, cl.cw * WC, cl.ch * WC);
+      ctx.globalAlpha = 1;
+      ctx.imageSmoothingEnabled = false;
+    }
+    // lightning
+    for (const b of cl.bolts) {
+      if (!inView(b.x, b.y)) continue;
+      ctx.strokeStyle = `rgba(235,240,255,${b.life / 6})`; ctx.lineWidth = 2 / Math.max(1, c.zoom * 0.5);
+      ctx.beginPath(); let x = b.x, y = b.y - 220; ctx.moveTo(x, y);
+      let s = b.seed;
+      while (y < b.y) { s = (s * 16807) % 2147483647; x += ((s % 100) / 100 - 0.5) * 24; y += 22; ctx.lineTo(x, Math.min(y, b.y)); }
+      ctx.stroke();
+    }
     if (w.flash > 0) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = `rgba(255,220,180,${w.flash * 0.5})`;
+      ctx.fillStyle = `rgba(235,235,255,${w.flash * 0.45})`;
       ctx.fillRect(0, 0, this.cv.width, this.cv.height);
       w.flash = Math.max(0, w.flash - 0.04);
     }
   }
+
+  fruit(hue) {
+    const h = hue ?? 10;
+    return this.fruitSprites[h] || (this.fruitSprites[h] = makeFruitSprite(h));
+  }
+
+  drawTree(ctx, t) {
+    if (!t.sprite) t.sprite = makeTreeSprite(t);
+    const lift = LZ * 2 * (t.r / t.maxR);
+    ctx.fillStyle = 'rgba(10,25,15,0.28)';
+    ctx.beginPath(); ctx.ellipse(t.x + 8, t.y + 4, t.r * 1.05, t.r * 0.7, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5a3d27'; ctx.fillRect(t.x - 2, t.y - lift, 4, lift + 3);
+    ctx.fillStyle = '#3e2a1a'; ctx.fillRect(t.x + 1, t.y - lift, 1, lift + 3);
+    const S = t.sprite.width * 2;
+    ctx.drawImage(t.sprite, t.x - S / 2, t.y - S / 2 - lift - 2, S, S);
+  }
+  drawCanopyFruit(ctx, f) {
+    const spr = this.fruit(f.hue);
+    ctx.drawImage(spr, f.x - 4, f.y - f.z * LZ - 4, 8, 8);
+    ctx.fillStyle = 'rgba(255,255,220,0.5)'; ctx.fillRect(f.x - 1, f.y - f.z * LZ - 4, 1, 1);
+  }
+  drawCreature(ctx, cr, frame, zoom) {
+    if (!cr.sprite) cr.sprite = makeCreatureSprite(cr.g);
+    const sp = cr.sprite, S = sp.size * cr.g.size / SP;
+    const moving = Math.abs(cr.vx) + Math.abs(cr.vy) > 0.15;
+    const fr = moving ? ((frame / 8 + cr.id) | 0) % 2 : 0;
+    const sy = cr.y - cr.z * LZ;
+    const fish = cr.g.habitat > 0.6, swim = cr.inWater;
+    ctx.fillStyle = swim ? 'rgba(10,30,60,0.25)' : 'rgba(0,0,0,0.2)';
+    ctx.beginPath(); ctx.ellipse(cr.x + 1.5, sy + 2.5, cr.radius * 0.9, cr.radius * 0.6, 0, 0, TAU); ctx.fill();
+    if (swim && zoom > 1) {
+      ctx.strokeStyle = 'rgba(220,245,255,0.35)'; ctx.lineWidth = 0.6;
+      const rr2 = cr.radius * (1.1 + ((frame + cr.id * 7) % 40) / 40);
+      ctx.beginPath(); ctx.ellipse(cr.x, cr.y, rr2, rr2 * 0.6, 0, 0, TAU); ctx.stroke();
+    }
+    ctx.save();
+    ctx.translate(cr.x, sy); ctx.rotate(cr.a);
+    const grow = Math.min(1, 0.55 + cr.age / 500);
+    ctx.scale(grow, grow);
+    if (swim) ctx.globalAlpha = fish ? 0.85 : 0.75;
+    if (cr.pain > 0.5) ctx.globalAlpha = 0.6 + 0.4 * Math.sin(frame);
+    ctx.drawImage(sp.frames[fr], -S / 2, -S / 2, S, S);
+    if (cr.carry >= 1 && zoom > 1.2) { ctx.fillStyle = '#b08a5a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 2.4); ctx.fillStyle = '#e0c49a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 0.8); }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    if (cr.sick > 0 && zoom > 0.8) { ctx.fillStyle = 'rgba(170,220,60,0.28)'; ctx.beginPath(); ctx.arc(cr.x, sy, cr.radius * 1.1, 0, TAU); ctx.fill(); }
+    // voices: little sound arcs (warm = voice 1, cool = voice 2)
+    if (zoom > 1.6) {
+      const v = Math.abs(cr.v1) > Math.abs(cr.v2) ? cr.v1 : cr.v2;
+      if (Math.abs(v) > 0.55) {
+        ctx.strokeStyle = Math.abs(cr.v1) > Math.abs(cr.v2) ? 'rgba(255,200,120,0.7)' : 'rgba(150,200,255,0.7)';
+        ctx.lineWidth = 0.6;
+        const ph = (frame * 0.15 + cr.id) % 1;
+        for (let k = 0; k < 2; k++) { const r = cr.radius + 3 + (k + ph) * 4; ctx.beginPath(); ctx.arc(cr.x, sy, r, cr.a - 0.5, cr.a + 0.5); ctx.stroke(); }
+      }
+    }
+  }
+  drawFire(ctx, frame, inView) {
+    const cl = this.world.climate;
+    for (let y = 0; y < cl.ch; y++) for (let x = 0; x < cl.cw; x++) {
+      const f = cl.fire[y * cl.cw + x]; if (f <= 0) continue;
+      const X = x * WC, Y = y * WC; if (!inView(X + 16, Y + 16)) continue;
+      const n = 6 + f * 14;
+      for (let i = 0; i < n; i++) {
+        const h = (x * 73 + y * 151 + i * 37 + ((frame / 3) | 0) * 13) % 997;
+        const px2 = X + (h * 7) % WC, py = Y + (h * 13) % WC;
+        const fl = 2 + (h % 5) * f;
+        ctx.fillStyle = h % 3 === 0 ? '#ffe08a' : h % 3 === 1 ? '#ff9a3c' : '#e8452c';
+        ctx.fillRect(px2, py - fl, 1.6, fl);
+      }
+      ctx.fillStyle = `rgba(60,55,55,${0.15 * f})`;
+      const sx = X + 16 + Math.sin(frame * 0.05 + x) * 6, sy2 = Y - 10 - ((frame * 0.4 + y * 10) % 30);
+      ctx.beginPath(); ctx.arc(sx, sy2, 8 + f * 6, 0, TAU); ctx.fill();
+    }
+  }
+  // One row of stacked wall columns in oblique projection: front faces, then tops.
+  drawWallRow(ctx, by, bx0, bx1) {
+    const w = this.world, bw = w.bw, O = w.bOwner, H = w.bH, HP = w.bHp;
+    const pal = this._wallPal;
+    const colors = (o) => {
+      let p = pal.get(o);
+      const sp = w.species.get(o), hue = sp ? sp.hue : 0;
+      if (!p || p.hue !== hue) {
+        p = o < 0 ? { hue, top: '#8f877b', front: '#5f584f', side: '#4a443d', mort: '#6d665c' }
+          : { hue, top: hsl(hue, 0.3, 0.6), front: hsl(hue, 0.28, 0.38), side: hsl(hue, 0.3, 0.26), mort: hsl(hue, 0.25, 0.3) };
+        pal.set(o, p);
+      }
+      return p;
+    };
+    for (let x = bx0; x <= bx1; x++) {
+      const b = by * bw + x, o = O[b], h = H[b];
+      if (!o || !h) continue;
+      const p = colors(o), X = x * BS, Y = by * BS, top = Y - h * LZ;
+      ctx.globalAlpha = o < 0 ? 0.6 : 0.65 + Math.min(1, HP[b] / 120) * 0.35;
+      // ground shadow cast to the south-east
+      ctx.fillStyle = 'rgba(10,20,15,0.25)'; ctx.fillRect(X + 2, Y + BS, BS, Math.min(6, h * 2));
+      // front face with a brick course per level
+      const below = by + 1 < w.bh ? H[b + bw] : 0;
+      if (below < h) {
+        ctx.fillStyle = p.front; ctx.fillRect(X, top + BS, BS, h * LZ);
+        ctx.fillStyle = p.mort;
+        for (let k = 1; k <= h; k++) ctx.fillRect(X, top + BS + k * LZ - 0.8, BS, 0.8);
+        ctx.fillRect(X + ((x + by) % 2 ? BS * 0.5 : 0), top + BS, 0.8, LZ);
+      }
+      // side edges where the neighbour is lower
+      ctx.fillStyle = p.side;
+      if (x > 0 && H[b - 1] < h) ctx.fillRect(X, top, 1, BS + h * LZ);
+      if (x < bw - 1 && H[b + 1] < h) ctx.fillRect(X + BS - 1, top, 1, BS + h * LZ);
+      // top face
+      ctx.fillStyle = p.top; ctx.fillRect(X, top, BS, BS);
+      if (by > 0 && H[b - bw] < h) { ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(X, top, BS, 1.2); }
+      if (o > 0 && HP[b] < 50) { ctx.fillStyle = 'rgba(20,15,10,0.6)'; ctx.fillRect(X + 2, top + 3, 3, 0.8); ctx.fillRect(X + 4, top + 3.8, 0.8, 2); }
+    }
+    ctx.globalAlpha = 1;
+  }
 }
 
-Renderer.prototype.drawWalls = function (ctx, vx0, vx1, vy0, vy1) {
-  const w = this.world;
-  if (!w.blockCount && !w.bOwner.some((o) => o < 0)) return;
-  const bw = w.bw, O = w.bOwner, HP = w.bHp;
-  const bx0 = Math.max(0, (vx0 / BS) | 0), bx1 = Math.min(bw - 1, (vx1 / BS) | 0);
-  const by0 = Math.max(0, (vy0 / BS) | 0), by1 = Math.min(w.bh - 1, (vy1 / BS) | 0);
-  const pal = this._wallPal || (this._wallPal = new Map());
-  const colors = (o) => {
-    let p = pal.get(o);
-    const sp = w.species.get(o), hue = sp ? sp.hue : 0;
-    if (!p || p.hue !== hue) {
-      p = o < 0 ? { hue, base: '#6d665c', top: '#8f877b', dark: '#4a443d', mort: '#5b554d' }
-        : { hue, base: hsl(hue, 0.28, 0.42), top: hsl(hue, 0.35, 0.62), dark: hsl(hue, 0.3, 0.24), mort: hsl(hue, 0.25, 0.34) };
-      pal.set(o, p);
-    }
-    return p;
-  };
-  // drop shadows first
-  ctx.fillStyle = 'rgba(10,20,15,0.28)';
-  for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
-    const b = y * bw + x, o = O[b];
-    if (o && O[b + bw] !== o) ctx.fillRect(x * BS + 1.5, (y + 1) * BS, BS, 3);
-  }
-  for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
-    const b = y * bw + x, o = O[b];
-    if (!o) continue;
-    const p = colors(o), X = x * BS, Y = y * BS;
-    ctx.globalAlpha = o < 0 ? 0.55 : 0.55 + Math.min(1, HP[b] / 120) * 0.45;
-    ctx.fillStyle = p.base; ctx.fillRect(X, Y, BS, BS);
-    // brick courses
-    ctx.fillStyle = p.mort;
-    ctx.fillRect(X, Y + BS * 0.5, BS, 0.8);
-    ctx.fillRect(X + ((x + y) % 2 ? BS * 0.5 : 0), Y, 0.8, BS * 0.5);
-    ctx.fillRect(X + ((x + y) % 2 ? 0 : BS * 0.5), Y + BS * 0.5, 0.8, BS * 0.5);
-    if (O[b - bw] !== o) { ctx.fillStyle = p.top; ctx.fillRect(X, Y, BS, 2); }
-    if (O[b + bw] !== o) { ctx.fillStyle = p.dark; ctx.fillRect(X, Y + BS - 2, BS, 2); }
-    if (O[b - 1] !== o) { ctx.fillStyle = p.dark; ctx.fillRect(X, Y, 1, BS); }
-    if (O[b + 1] !== o) { ctx.fillStyle = p.dark; ctx.fillRect(X + BS - 1, Y, 1, BS); }
-    if (o > 0 && HP[b] < 50) { ctx.fillStyle = 'rgba(20,15,10,0.6)'; ctx.fillRect(X + 2, Y + 3, 3, 0.8); ctx.fillRect(X + 4, Y + 3.8, 0.8, 2); }
-  }
-  ctx.globalAlpha = 1;
-};
+function makeAlgaeSprite() {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 5;
+  const c = cv.getContext('2d');
+  ['.1.1.', '12121', '.212.', '12121', '.1.1.'].forEach((row, y) => [...row].forEach((ch, x) => {
+    if (ch !== '.') px(c, x, y, ch === '1' ? '#3f8f6a' : '#7fd1a0');
+  }));
+  return cv;
+}
 
 // Large portrait of a creature for the inspector / species list.
 export function drawPortrait(canvas, g, frame = 0) {

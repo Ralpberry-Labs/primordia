@@ -43,8 +43,10 @@
         <button class="tb-btn tool" data-tool="tree" title="Plant a tree"><span class="ico">♣</span><span class="lbl">Tree</span></button>
         <button class="tb-btn tool" data-tool="spawn" title="Seed a new species"><span class="ico">✦</span><span class="lbl">Life</span></button>
         <button class="tb-btn tool" data-tool="meteor" title="Meteor strike"><span class="ico">☄</span><span class="lbl">Meteor</span></button>
+        <button class="tb-btn tool" data-tool="fire" title="Start a fire"><span class="ico">🔥</span><span class="lbl">Fire</span></button>
       </div>
       <div class="tb-group">
+        <button id="btnLayer" class="tb-btn" title="Map layer: normal / moisture / temperature"><span class="ico">◧</span></button>
         <button id="btnPanel" class="tb-btn" title="Show / hide panel"><span class="ico">☰</span></button>
       </div>
     </nav>
@@ -79,6 +81,12 @@
                 <option value="armor">Armor</option>
                 <option value="mutRate">Mutation rate</option>
                 <option value="learned">Lifetime learning (rewired %)</option>
+                <option value="voice">Share using voice</option>
+                <option value="height">Living up high (level)</option>
+                <option value="fur">Fur</option>
+                <option value="habitat">Habitat (land → water)</option>
+                <option value="choosy">Mate choosiness</option>
+                <option value="curiosity">Curiosity</option>
                 <option value="shelter">Shelter (living in walls)</option>
                 <option value="builders">Share of builders</option>
                 <option value="plastic">Learning</option>
@@ -138,6 +146,8 @@
               <button class="btn" id="evBloom">🌸 Bloom</button>
               <button class="btn" id="evPlague">☣ Plague</button>
               <button class="btn" id="evMeteor">☄ Random meteor</button>
+              <button class="btn" id="evStorm">⛈ Storm</button>
+              <button class="btn" id="evDrought">🏜 Drought</button>
               <button class="btn" id="evWinter">❄ Cold snap</button>
               <button class="btn" id="evFounders">✦ New founders</button>
             </div>

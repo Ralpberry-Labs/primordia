@@ -1,16 +1,18 @@
 // Loads the C++ brain (WebAssembly). If WebAssembly is unavailable, falls back
 // to a JavaScript port of the exact same math so the world still runs.
-import { N_IN, H_MAX, N_OUT, N_MEM, W_LEN, O_IH, O_HH, O_HO, O_BH, O_BO } from './genome.js';
+import { N_IN, H_MAX, N_OUT, N_MEM, W_LEN, O_IH, O_HH, O_HO, O_BH, O_BO, OUT } from './genome.js';
 
 const MAX_SLOTS = 1600;
+export const MAXC = 1600, MAXF = 12000;
 const TR_LEN = N_IN * H_MAX + H_MAX * N_OUT;
 const MEM_IN = N_IN - N_MEM;
+const MEMV = OUT.mem, GA = OUT.gateA, GB = OUT.gateB, VAL = OUT.value;
 
 export async function createBrain(wasmBytes) {
   try {
     let bytes = wasmBytes;
     if (!bytes) {
-      const res = await fetch(new URL('../wasm/brain.wasm', import.meta.url));
+      const res = await fetch(new URL('../wasm/brain.wasm?v=4', import.meta.url));
       if (!res.ok) throw new Error('no wasm');
       bytes = await res.arrayBuffer();
     }
@@ -24,8 +26,17 @@ export async function createBrain(wasmBytes) {
       kind: 'C++ / WebAssembly',
       W: f(e.ptr_w(), MAX_SLOTS * W_LEN), TR: f(e.ptr_tr(), MAX_SLOTS * TR_LEN), HS: f(e.ptr_h(), MAX_SLOTS * H_MAX),
       MEM: f(e.ptr_mem(), MAX_SLOTS * N_MEM), IN: f(e.ptr_in(), MAX_SLOTS * N_IN), OUT: f(e.ptr_out(), MAX_SLOTS * N_OUT),
-      NH: i(e.ptr_nh(), MAX_SLOTS), ETA: f(e.ptr_eta(), MAX_SLOTS), REWARD: f(e.ptr_reward(), MAX_SLOTS), ACTIVE: i(e.ptr_active(), MAX_SLOTS),
-      think: (n) => e.think(n), reset: (s) => e.reset_slot(s),
+      NH: i(e.ptr_nh(), MAX_SLOTS), ETA: f(e.ptr_eta(), MAX_SLOTS), CUR: f(e.ptr_cur(), MAX_SLOTS),
+      REWARD: f(e.ptr_reward(), MAX_SLOTS), DELTA: f(e.ptr_delta(), MAX_SLOTS), ACTIVE: i(e.ptr_active(), MAX_SLOTS),
+      think: (n) => e.think(n), reset: (s) => e.reset_slot(s), imitate: (c, p, r) => e.imitate(c, p, r),
+      V: {
+        cx: f(e.v_cx(), MAXC), cy: f(e.v_cy(), MAXC), ca: f(e.v_ca(), MAXC), csz: f(e.v_csz(), MAXC), csig: f(e.v_csig(), MAXC),
+        cv1: f(e.v_cv1(), MAXC), cv2: f(e.v_cv2(), MAXC), crange: f(e.v_crange(), MAXC), cfov: f(e.v_cfov(), MAXC), cdiet: f(e.v_cdiet(), MAXC),
+        csp: i(e.v_csp(), MAXC), cslot: i(e.v_cslot(), MAXC), ceyes: i(e.v_ceyes(), MAXC), cthink: i(e.v_cthink(), MAXC),
+        fx: f(e.v_fx(), MAXF), fy: f(e.v_fy(), MAXF), fe: f(e.v_fe(), MAXF), ft: i(e.v_ft(), MAXF),
+        heard: f(e.v_heard(), MAXC), ov1: f(e.v_ov1(), MAXC), ov2: f(e.v_ov2(), MAXC), crowd: i(e.v_crowd(), MAXC),
+      },
+      senseAll: (nc, nf, W, H) => e.sense_all(nc, nf, W, H),
     });
   } catch (err) {
     return jsBrain();
@@ -37,7 +48,6 @@ class Brain {
     Object.assign(this, o);
     this.free = [];
     for (let s = MAX_SLOTS - 1; s >= 0; s--) this.free.push(s);
-    this.count = 0;
   }
   alloc(g, weights) {
     const s = this.free.pop();
@@ -45,6 +55,7 @@ class Brain {
     this.W.set(weights || g.w, s * W_LEN);
     this.NH[s] = g.hidden;
     this.ETA[s] = g.plastic * 0.1;
+    this.CUR[s] = g.curiosity || 0;
     this.reset(s);
     return s;
   }
@@ -54,7 +65,6 @@ class Brain {
   outputs(s) { return this.OUT.subarray(s * N_OUT, (s + 1) * N_OUT); }
   hidden(s) { return this.HS.subarray(s * H_MAX, (s + 1) * H_MAX); }
   memory(s) { return this.MEM.subarray(s * N_MEM, (s + 1) * N_MEM); }
-  // how far lifetime learning has moved this brain away from its inborn wiring
   drift(s, g) {
     const w = this.W, o = s * W_LEN; let d = 0, n = 0;
     for (let i = 0; i < W_LEN; i++) { const a = g.w[i]; d += Math.abs(w[o + i] - a); n += Math.abs(a); }
@@ -64,8 +74,10 @@ class Brain {
 
 function jsBrain() {
   const W = new Float32Array(MAX_SLOTS * W_LEN), TR = new Float32Array(MAX_SLOTS * TR_LEN), HS = new Float32Array(MAX_SLOTS * H_MAX);
-  const MEM = new Float32Array(MAX_SLOTS * N_MEM), IN = new Float32Array(MAX_SLOTS * N_IN), OUT = new Float32Array(MAX_SLOTS * N_OUT);
-  const NH = new Int32Array(MAX_SLOTS), ETA = new Float32Array(MAX_SLOTS), REWARD = new Float32Array(MAX_SLOTS), ACTIVE = new Int32Array(MAX_SLOTS);
+  const HP = new Float32Array(MAX_SLOTS * H_MAX);
+  const MEM = new Float32Array(MAX_SLOTS * N_MEM), IN = new Float32Array(MAX_SLOTS * N_IN), OUTv = new Float32Array(MAX_SLOTS * N_OUT);
+  const NH = new Int32Array(MAX_SLOTS), ETA = new Float32Array(MAX_SLOTS), CUR = new Float32Array(MAX_SLOTS), REWARD = new Float32Array(MAX_SLOTS);
+  const VPREV = new Float32Array(MAX_SLOTS), DELTA = new Float32Array(MAX_SLOTS), ACTIVE = new Int32Array(MAX_SLOTS);
   const TMP = new Float32Array(H_MAX);
   const ftanh = (x) => (x > 3 ? 1 : x < -3 ? -1 : (x * (27 + x * x)) / (27 + 9 * x * x));
   const cw = (v) => (v > 4 ? 4 : v < -4 ? -4 : v);
@@ -78,36 +90,96 @@ function jsBrain() {
       for (let k = 0; k < nh; k++) a += HS[hh + k] * W[w + O_HH + k * H_MAX + j];
       TMP[j] = ftanh(a);
     }
-    for (let j = 0; j < nh; j++) HS[hh + j] = TMP[j];
+    for (let j = 0; j < nh; j++) { HP[hh + j] = HS[hh + j]; HS[hh + j] = TMP[j]; }
     for (let m = 0; m < N_OUT; m++) {
       let a = W[w + O_BO + m];
       for (let j = 0; j < nh; j++) a += HS[hh + j] * W[w + O_HO + j * N_OUT + m];
-      OUT[oo + m] = ftanh(a);
+      OUTv[oo + m] = ftanh(a);
     }
-    let ga = (OUT[oo + 11] + 1) * 0.5, gb = (OUT[oo + 12] + 1) * 0.5; ga *= ga; gb *= gb;
-    MEM[mm] += ga * (OUT[oo + 7] - MEM[mm]); MEM[mm + 1] += ga * (OUT[oo + 8] - MEM[mm + 1]);
-    MEM[mm + 2] += gb * (OUT[oo + 9] - MEM[mm + 2]); MEM[mm + 3] += gb * (OUT[oo + 10] - MEM[mm + 3]);
+    let ga = (OUTv[oo + GA] + 1) * 0.5, gb = (OUTv[oo + GB] + 1) * 0.5; ga *= ga; gb *= gb;
+    MEM[mm] += ga * (OUTv[oo + MEMV] - MEM[mm]); MEM[mm + 1] += ga * (OUTv[oo + MEMV + 1] - MEM[mm + 1]);
+    MEM[mm + 2] += gb * (OUTv[oo + MEMV + 2] - MEM[mm + 2]); MEM[mm + 3] += gb * (OUTv[oo + MEMV + 3] - MEM[mm + 3]);
+    const V = OUTv[oo + VAL];
+    let delta = REWARD[s] + 0.9 * V - VPREV[s];
+    delta = delta > 1 ? 1 : delta < -1 ? -1 : delta;
+    VPREV[s] = V; DELTA[s] = delta;
     const eta = ETA[s]; if (eta <= 0) return;
-    const lr = eta * REWARD[s], t = s * TR_LEN;
+    const ac = eta * 2 * delta;
+    for (let j = 0; j < nh; j++) { const k = w + O_HO + j * N_OUT + VAL; W[k] = cw(W[k] + ac * HP[hh + j]); }
+    W[w + O_BO + VAL] = cw(W[w + O_BO + VAL] + ac * 0.5);
+    const lr = eta * (delta + CUR[s] * Math.abs(delta)), t = s * TR_LEN;
     for (let i = 0; i < N_IN; i++) {
       const pre = IN[ii + i];
       for (let j = 0; j < nh; j++) {
         const ti = t + i * H_MAX + j, e = TR[ti] * 0.92 + pre * HS[hh + j]; TR[ti] = e;
-        if (lr !== 0) { const wi = w + O_IH + i * H_MAX + j; W[wi] = cw(W[wi] + lr * e); }
+        const wi = w + O_IH + i * H_MAX + j; W[wi] = cw(W[wi] + lr * e);
       }
     }
     const to = t + N_IN * H_MAX;
-    for (let j = 0; j < nh; j++) for (let m = 0; m < N_OUT; m++) {
-      const idx = j * N_OUT + m, e = TR[to + idx] * 0.92 + HS[hh + j] * OUT[oo + m]; TR[to + idx] = e;
-      if (lr !== 0) W[w + O_HO + idx] = cw(W[w + O_HO + idx] + lr * e);
+    for (let j = 0; j < nh; j++) for (let m = 0; m < VAL; m++) {
+      const idx = j * N_OUT + m, e = TR[to + idx] * 0.92 + HS[hh + j] * OUTv[oo + m]; TR[to + idx] = e;
+      W[w + O_HO + idx] = cw(W[w + O_HO + idx] + lr * e);
+    }
+  }
+  const F = (n) => new Float32Array(n), I = (n) => new Int32Array(n);
+  const V = {
+    cx: F(MAXC), cy: F(MAXC), ca: F(MAXC), csz: F(MAXC), csig: F(MAXC), cv1: F(MAXC), cv2: F(MAXC), crange: F(MAXC), cfov: F(MAXC), cdiet: F(MAXC),
+    csp: I(MAXC), cslot: I(MAXC), ceyes: I(MAXC), cthink: I(MAXC), fx: F(MAXF), fy: F(MAXF), fe: F(MAXF), ft: I(MAXF),
+    heard: F(MAXC), ov1: F(MAXC), ov2: F(MAXC), crowd: I(MAXC),
+  };
+  const CS = 64;
+  function senseAll(nc, nf, Wd, Hd) {
+    const cols = ((Wd / CS) | 0) + 1, rows = ((Hd / CS) | 0) + 1;
+    const cHead = new Int32Array(cols * rows).fill(-1), fHead = new Int32Array(cols * rows).fill(-1), cNext = new Int32Array(nc), fNext = new Int32Array(nf);
+    const cell = (x, y) => Math.min(rows - 1, Math.max(0, (y / CS) | 0)) * cols + Math.min(cols - 1, Math.max(0, (x / CS) | 0));
+    for (let i = 0; i < nc; i++) { const g = cell(V.cx[i], V.cy[i]); cNext[i] = cHead[g]; cHead[g] = i; }
+    for (let i = 0; i < nf; i++) { const g = cell(V.fx[i], V.fy[i]); fNext[i] = fHead[g]; fHead[g] = i; }
+    for (let i = 0; i < nc; i++) {
+      if (!V.cthink[i]) continue;
+      const x = V.cx[i], y = V.cy[i], a = V.ca[i], range = V.crange[i], r2 = range * range, fov = V.cfov[i], half = fov / 2, diet = V.cdiet[i], sz = V.csz[i], ne = V.ceyes[i], sp = V.csp[i];
+      const base = V.cslot[i] * N_IN;
+      IN.fill(0, base, base + 30);
+      let heard = 0, v1 = 0, v2 = 0, vw = 0, crowd = 0;
+      const x0 = Math.max(0, ((x - range) / CS) | 0), x1 = Math.min(cols - 1, ((x + range) / CS) | 0), y0 = Math.max(0, ((y - range) / CS) | 0), y1 = Math.min(rows - 1, ((y + range) / CS) | 0);
+      const wrap = (r) => { while (r > Math.PI) r -= 2 * Math.PI; while (r < -Math.PI) r += 2 * Math.PI; return r; };
+      for (let gy = y0; gy <= y1; gy++) for (let gx = x0; gx <= x1; gx++) {
+        const g = gy * cols + gx;
+        let seenC = 0;
+        for (let j = cHead[g]; j >= 0 && seenC < 12; j = cNext[j]) {
+          if (j === i) continue;
+          seenC++;
+          const dx = V.cx[j] - x, dy = V.cy[j] - y, d2 = dx * dx + dy * dy; if (d2 > r2) continue;
+          const d = Math.sqrt(d2), kin = V.csp[j] === sp;
+          if (d < 110) heard += V.csig[j] * (kin ? 1 : 0.4) * (1 - d / 110);
+          if (d < 140) { const wv = 1 - d / 140; v1 += V.cv1[j] * wv; v2 += V.cv2[j] * wv; vw += wv; }
+          if (d < 40) crowd++;
+          const rel = wrap(Math.atan2(dy, dx) - a); if (rel > half || rel < -half) continue;
+          const e = Math.min(ne - 1, ((rel + half) / fov * ne) | 0), v = 1 - d / range, ch = kin ? 3 : V.csz[j] < sz * 1.05 ? 1 : 2;
+          const k = base + e * 5 + ch; if (v > IN[k]) IN[k] = v;
+        }
+        let seenF = 0;
+        for (let j = fHead[g]; j >= 0 && seenF < 16; j = fNext[j], seenF++) {
+          const dx = V.fx[j] - x, dy = V.fy[j] - y, d2 = dx * dx + dy * dy; if (d2 > r2) continue;
+          const meat = V.ft[j] === 2, edible = meat ? diet : 1 - diet; if (edible < 0.08) continue;
+          const rel = wrap(Math.atan2(dy, dx) - a); if (rel > half || rel < -half) continue;
+          const d = Math.sqrt(d2), e = Math.min(ne - 1, ((rel + half) / fov * ne) | 0), v = (1 - d / range) * Math.min(1, 0.3 + V.fe[j] / 30);
+          const k = base + e * 5 + (meat ? 1 : 0); if (v > IN[k]) IN[k] = v;
+        }
+      }
+      V.heard[i] = Math.min(1, heard); V.ov1[i] = v1 / (vw + 0.5); V.ov2[i] = v2 / (vw + 0.5); V.crowd[i] = crowd;
     }
   }
   return new Brain({
-    kind: 'JavaScript (fallback)', W, TR, HS, MEM, IN, OUT, NH, ETA, REWARD, ACTIVE,
+    kind: 'JavaScript (fallback)', V, senseAll, W, TR, HS, MEM, IN, OUT: OUTv, NH, ETA, CUR, REWARD, DELTA, ACTIVE,
     think: (n) => { for (let k = 0; k < n; k++) one(ACTIVE[k]); },
     reset: (s) => {
-      HS.fill(0, s * H_MAX, (s + 1) * H_MAX); MEM.fill(0, s * N_MEM, (s + 1) * N_MEM); OUT.fill(0, s * N_OUT, (s + 1) * N_OUT);
-      TR.fill(0, s * TR_LEN, (s + 1) * TR_LEN); REWARD[s] = 0;
+      HS.fill(0, s * H_MAX, (s + 1) * H_MAX); HP.fill(0, s * H_MAX, (s + 1) * H_MAX); MEM.fill(0, s * N_MEM, (s + 1) * N_MEM);
+      OUTv.fill(0, s * N_OUT, (s + 1) * N_OUT); TR.fill(0, s * TR_LEN, (s + 1) * TR_LEN); REWARD[s] = 0; VPREV[s] = 0; DELTA[s] = 0;
+    },
+    imitate: (c, p, r) => {
+      const wc = c * W_LEN, wp = p * W_LEN, nh = Math.min(NH[c], NH[p]);
+      for (let j = 0; j < nh; j++) for (let m = 0; m < N_OUT; m++) { const i = O_HO + j * N_OUT + m; W[wc + i] += r * (W[wp + i] - W[wc + i]); }
+      for (let i = 0; i < N_IN; i++) for (let j = 0; j < nh; j++) { const k = O_IH + i * H_MAX + j; W[wc + k] += r * 0.5 * (W[wp + k] - W[wc + k]); }
     },
   });
 }

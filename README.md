@@ -6,30 +6,37 @@
 
 Brains are written in **C++ and compiled to WebAssembly**. Everything else is plain HTML, CSS and JavaScript, with no libraries. It works on phones too.
 
-## What evolves
+## Genetics (as in nature, simplified)
 
-Every creature carries a genome. Its children inherit a mutated copy of it, mixed with a mate's genome when breeding is sexual.
+- **Diploid DNA:** every creature carries two chromosomes, one from each parent.
+- **Polygenic traits:** each trait (size, speed, colour, armour, fur, diet, eyes, vision, habitat, mate preference, curiosity, even its own mutation and learning rates…) is set by 3 genes per chromosome. The trait you see is the average of all six gene copies, so offspring vary smoothly, like human height.
+- **Mendelian body shape:** body pixels are dominant (one copy is enough to show), and colour patterns are recessive (both copies are needed), so hidden patterns can skip generations and come back.
+- **Meiosis:** each parent passes on a gamete built from its two chromosomes with 1–2 crossovers, plus copying errors (small point mutations, and rarely a large-effect one). Asexual breeders clone themselves with copying errors.
+- **Neural genes:** brain wiring is inherited neuron by neuron. New neurons appear through **gene duplication** (a copy of an existing neuron that splits its output, so behaviour is unchanged at first), as happened in real brain evolution.
+- **Continuous speciation:** there is no hard switch. Close relatives of other species can interbreed, and how likely a hybrid is to survive falls off with genetic distance. Lineages drift apart, become reproductively isolated, and get new names in the Tree of Life.
 
-| Part | Genes |
-|---|---|
-| Body | 7×7 symmetric pixel body plan, colour pattern, hue, size, muscle/speed, armour |
-| Senses | 1–6 eyes, field of view, vision range |
-| Feeding | mouth size, diet (from plant-eater to meat-eater) |
-| Life history | breeding threshold, litter size, lifespan |
-| Evolvability | its own mutation rate, its own learning rate |
-| Brain | recurrent neural network with 2–20 hidden neurons. Neurons can be added or removed, and synapses can be wired, pruned or tuned |
+## Minds (C++ → WebAssembly)
 
-**Brains (C++ → WebAssembly, `cpp/brain.cpp`):** each brain is a recurrent network with up to 24 neurons, 51 inputs and 13 outputs. All brains are evaluated in one batched call per tick. The recurrent loop gives short-term memory, and **4 gated memory cells** hold information for as long as the creature chooses to keep it. Brains also **learn from experience** through reward-modulated Hebbian learning with eligibility traces: energy gained and shelter found strengthen the synapses that led to them, and pain weakens them. If WebAssembly isn't available, a JavaScript port of the same math runs instead.
+- **Network:** a recurrent net with up to 32 neurons, 58 senses and 16 outputs, plus 4 gated memory cells. All brains are evaluated in one batched C++ call per step.
+- **Dopamine learning:** each brain predicts how well things will go (a *value* neuron). Surprise, meaning reward minus prediction, is broadcast like dopamine and drives a three-factor Hebbian rule with eligibility traces, so behaviour that led to unexpectedly good outcomes is strengthened.
+- **Curiosity gene:** adds a bonus for surprise.
+- **Culture:** young creatures near a parent copy part of its *learned* behaviour.
+- **Voices:** two voice channels that others hear within range. Alarm calls are detected automatically when they evolve.
+- **Vision in C++:** each eye reports plants, prey, threats, kin and walls. The vision kernel bins everything into a spatial grid and caps attention per area.
+- **Survival of the smartest (optional):** periodically purges the lowest-scoring creatures of each species (scored on brain complexity, food gathered, offspring, building, learning and survival) and feeds the best so they breed sooner.
 
-**Senses:** each eye covers one slice of the view and reports plants, prey or meat, threats, kin, and walls (its own or foreign). The brain also feels hunger, health, age, pain, speed, crowding, a heartbeat clock, the glow of others, the material it is carrying, how sheltered it is, the direction of home, nearby kin who are building, nearby family, and its latest reward.
+## Environment
 
-**Actions:** move, turn, bite (creatures or foreign walls), glow, share food (family first), breed, build, and write to its memory cells.
-
-**Speciation:** when a lineage drifts far enough from its species' reference genome, it becomes a new species. The new species usually keeps its genus name, so families of related species appear in the Tree of Life.
+- **Weather:** wind blows clouds across the map, and thick clouds rain. Rain soaks the soil, and sun and heat dry it. Plants grow and sprout with soil moisture, so wet spells green the land and droughts brown it.
+- **Wildfire:** a probabilistic cellular automaton (Alexandridis-style) where p ∝ fuel · dryness · e^(wind·direction) · e^(slope). Lightning ignites dry fuel, fire runs downwind and uphill, rain puts it out, and ash fertilises the soil.
+- **Temperature:** falls with altitude (lapse rate), swings with day, night and season, and is moderated near water. A fur gene sets each species' comfort zone, so species spread to mountains or lowlands.
+- **Water life:** algae grows in lakes, and fish have their own brains. A habitat gene runs from land to water, so amphibians can evolve.
+- **Physics:** bodies have mass, muscle thrust and quadratic drag (water is much denser than air; fish are streamlined and flop on land), and they push each other apart weighted by mass. Falling from a height hurts.
+- **Seeds:** animals that eat fruit and plants carry seeds in the gut and drop them elsewhere, so gardens and new trees spring up along their paths.
 
 ## Civilisation and conflict
 
-- **Building:** creatures pick up stone, sand and wood as they move, and their brain decides when to place a wall. Blocks go where kin walls already are (termite-style stigmergy), so walls grow into lines, rooms and compounds rather than scattered bricks. Walls next to kin walls are stronger, lone walls crumble, and walls need repairs.
+- **3D building:** creatures pick up stone, sand and wood as they move, and their brain decides when to place a wall, or to stack a block on top of a wall in front of them, up to 4–6 levels. Creatures climb one level at a time, so reaching the top needs stairs. Height pays off: the richest fruit hangs in tree canopies and can only be reached from a tower, creatures up high see farther, and attackers have trouble reaching them. Fences one block high can be climbed by anyone, but walls two or more blocks high keep other species out. Blocks go where kin walls already are (termite-style stigmergy), so walls grow into lines, rooms and compounds rather than scattered bricks. Walls next to kin walls are stronger, lone walls crumble, and walls need repairs.
 - **Shelter:** living among your own walls saves energy, most of all on cold nights and in winter. Young born there start stronger, and defenders inside are hard to hurt. Strangers can't pass a species' walls and have to break them down.
 - **Families:** creatures sense parents, children and siblings, and feed hungry relatives first.
 - **Strength in numbers:** each extra attacker on the same victim adds force, so total force grows roughly with the square of their numbers, as in Lanchester's law for group combat. A mob of small creatures can bring down a giant. Bigger bodies out-muscle smaller ones, and starving creatures fight weakly.
