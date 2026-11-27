@@ -2,13 +2,18 @@
 import { rand, rr, ri, randn, chance, clamp } from './util.js';
 
 export const MAX_EYES = 6;
-export const CH = 4;                    // per-eye channels: plant, prey/meat, threat, kin
-export const N_SENSE = 9;               // energy, health, age, clock, bias, heard, pain, speed, crowd
-export const N_IN = MAX_EYES * CH + N_SENSE;
-export const H_MAX = 20;
-export const N_OUT = 6;                 // thrust, turn, bite, signal, share, breed
-export const OUT_NAMES = ['move', 'turn', 'bite', 'signal', 'share', 'breed'];
-export const SENSE_NAMES = ['energy', 'health', 'age', 'clock', 'bias', 'heard', 'pain', 'speed', 'crowd'];
+export const CH = 5;                    // per-eye channels: plant, prey/meat, threat, kin, structure
+export const CH_NAMES = ['🌿', 'prey', 'thr', 'kin', 'wall'];
+export const N_MEM = 4;                 // gated long-term memory cells (handled in C++)
+export const SENSE_NAMES = ['energy', 'health', 'age', 'clock', 'bias', 'heard', 'pain', 'speed', 'crowd',
+  'carry', 'shelter', 'home↺', 'home↑', 'home', 'builders', 'family', 'reward', 'mem1', 'mem2', 'mem3', 'mem4'];
+export const N_SENSE = SENSE_NAMES.length;           // 21 (last 4 are memory, filled by the brain)
+export const S = Object.fromEntries(SENSE_NAMES.map((n, i) => [n, i]));
+export const N_IN = MAX_EYES * CH + N_SENSE;         // 51
+export const H_MAX = 24;
+export const OUT_NAMES = ['move', 'turn', 'bite', 'signal', 'share', 'breed', 'build', 'mem1←', 'mem2←', 'mem3←', 'mem4←', 'gate A', 'gate B'];
+export const N_OUT = OUT_NAMES.length;               // 13
+export const OUT = { move: 0, turn: 1, bite: 2, signal: 3, share: 4, breed: 5, build: 6 };
 
 // weight layout inside one Float32Array
 export const O_IH = 0;
@@ -58,7 +63,7 @@ export function randomGenome(opts = {}) {
   g.litter = rr(1, 2.5);
   g.lifespan = rr(4000, 8000);
   g.mutRate = rr(0.06, 0.16);
-  g.plastic = rr(0, 0.02);
+  g.plastic = rr(0.004, 0.03);
   g.sat = rr(0.5, 0.9);
   g.light = rr(0.45, 0.65);
   g.eyes = ri(1, 3);
@@ -89,6 +94,17 @@ export function randomGenome(opts = {}) {
   g.w[O_BO + 0] = 0.3 + rand() * 0.4;
   g.w[O_BO + 1] = randn() * 0.15;
   g.w[O_BO + 5] = 0.5;
+  // faint, random building / homing urges — whether they pay off is up to evolution
+  const B = MAX_EYES * CH;
+  if (chance(0.6)) {
+    g.w[H(B + S.carry, 3)] = rr(0.5, 2);
+    g.w[H(B + S.shelter, 3)] = -rr(0, 1.5);
+    g.w[H(B + S.builders, 3)] = rr(0, 1.5);
+    g.w[HO(3, OUT.build)] = rr(0.6, 1.8);
+  }
+  g.w[O_BO + OUT.build] = rr(-0.8, 0.2);
+  if (chance(0.5)) { g.w[H(B + S['home↺'], 4)] = rr(0.5, 1.5); g.w[HO(4, OUT.turn)] = rr(0.3, 1.2); }
+  if (g.hidden < 5) g.hidden = 5;
   return g;
 }
 
@@ -205,7 +221,7 @@ export function brainStats(g) {
   for (let k = 0; k < nh; k++) for (let j = 0; j < nh; j++) if (g.w[O_HH + k * H_MAX + j] !== 0) syn++;
   for (let j = 0; j < nh; j++) for (let m = 0; m < N_OUT; m++) if (g.w[O_HO + j * N_OUT + m] !== 0) syn++;
   // "IQ": a playful complexity score — neurons, wiring, senses and learning.
-  const iq = Math.round(nh * 4 + syn * 0.35 + g.eyes * 3 + g.plastic * 400);
+  const iq = Math.round(nh * 4 + syn * 0.3 + g.eyes * 3 + g.plastic * 400);
   return { neurons: nh, synapses: syn, iq };
 }
 

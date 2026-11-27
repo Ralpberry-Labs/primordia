@@ -1,7 +1,8 @@
 // Wires the world, renderer and UI together.
 import { World, RULES, defaultRules } from './world.js';
 import { Renderer, drawPortrait } from './render.js';
-import { GENES, INT_GENES, N_IN, N_OUT, H_MAX, MAX_EYES, CH, O_IH, O_HH, O_BO, OUT_NAMES, SENSE_NAMES, serializeGenome, deserializeGenome } from './genome.js';
+import { GENES, INT_GENES, N_IN, N_OUT, H_MAX, MAX_EYES, CH, CH_NAMES, O_IH, O_HO, OUT_NAMES, SENSE_NAMES, serializeGenome, deserializeGenome } from './genome.js';
+import { createBrain } from './brain.js';
 import { setSeed, hsl, clamp } from './util.js';
 
 const $ = (s) => document.querySelector(s);
@@ -16,18 +17,19 @@ const state = {
 
 function loadRules() {
   const r = defaultRules();
-  try { Object.assign(r, JSON.parse(localStorage.getItem('primordia.rules') || '{}')); } catch {}
+  try { Object.assign(r, JSON.parse(localStorage.getItem('primordia.v2.rules') || '{}')); } catch {}
   for (const k in r) if (!(k in RULES)) delete r[k];
   return r;
 }
-function saveRules() { try { localStorage.setItem('primordia.rules', JSON.stringify(state.rules)); } catch {} }
+function saveRules() { try { localStorage.setItem('primordia.v2.rules', JSON.stringify(state.rules)); } catch {} }
 
 // ---------- world lifecycle ----------
 function newWorld(seed, sizeKey = 'm', founders = 6) {
   seed = seed ?? ((Math.random() * 1e9) | 0);
   setSeed(seed);
   const [W, H] = SIZES[sizeKey] || SIZES.m;
-  const w = new World({ W, H, seed, rules: state.rules });
+  if (state.world) for (const c of state.world.creatures) state.brain.release(c.slot);
+  const w = new World({ W, H, seed, rules: state.rules, brain: state.brain });
   w.populate(founders, sizeKey === 's' ? 16 : sizeKey === 'l' ? 28 : 22);
   w.log(`A new world is born (seed ${seed}). ${founders} founding species arrive.`, 140);
   state.world = w;
@@ -88,7 +90,9 @@ function updateHUD() {
     `<span class="chip"><span class="dot" style="background:#8fe3b8"></span><span class="k">Life</span><b>${w.creatures.length}</b></span>`,
     `<span class="chip"><span class="k">Species</span><b>${living}</b></span>`,
     `<span class="chip opt"><span class="k">Gen</span><b>${w.maxGen}</b></span>`,
+    `<span class="chip"><span class="k">▦ Walls</span><b>${fmt(w.blockCount)}</b></span>`,
     `<span class="chip opt"><span class="k">Groups</span><b>${w.groups.length}</b></span>`,
+    w.sickCount > 5 ? `<span class="chip opt"><span class="dot" style="background:#b6dc3c"></span><span class="k">Sick</span><b>${w.sickCount}</b></span>` : '',
     `<span class="chip opt"><span class="k">IQ</span><b>${iq.toFixed(0)}</b></span>`,
     `<span class="chip opt"><span class="k">Plants</span><b>${fmt(w.food.length)}</b></span>`,
   ].join('');
@@ -213,7 +217,7 @@ function updateSpeciesList() {
     const cv = pc.cv;
     li.appendChild(cv);
     const parent = s.parent ? w.species.get(s.parent) : null;
-    li.insertAdjacentHTML('beforeend', `<div><div class="nm">${s.name}</div><div class="meta">${dietBadge(s.rep.diet)}<span>IQ ${(st.iq / st.n).toFixed(0)}</span><span>gen ${st.gen}</span>${parent ? `<span>from ${parent.genus === s.genus ? parent.name.split(' ')[1] : parent.name}</span>` : '<span>founder</span>'}</div><div class="bar" style="width:${(s.count / maxC) * 100}%;background:${hsl(s.hue, 0.65, 0.6)}"></div></div><div class="cnt">${s.count}</div>`);
+    li.insertAdjacentHTML('beforeend', `<div><div class="nm">${s.name}</div><div class="meta">${dietBadge(s.rep.diet)}<span>IQ ${(st.iq / st.n).toFixed(0)}</span>${s.blocks > 0 ? `<span>▦ ${s.blocks}</span>` : ''}<span>gen ${st.gen}</span>${parent ? `<span>from ${parent.genus === s.genus ? parent.name.split(' ')[1] : parent.name}</span>` : '<span>founder</span>'}</div><div class="bar" style="width:${(s.count / maxC) * 100}%;background:${hsl(s.hue, 0.65, 0.6)}"></div></div><div class="cnt">${s.count}</div>`);
     li.onclick = () => {
       const members = w.creatures.filter((c) => c.sp === s.id);
       if (members.length) { selectCreature(members[(Math.random() * members.length) | 0]); state.follow = true; setFollowBtn(); }
@@ -263,64 +267,70 @@ function updateInspector() {
   if (!c) return;
   const sp = w.species.get(c.sp);
   $('#ciName').textContent = sp.name;
-  $('#ciSub').textContent = `#${c.id} · generation ${c.gen} · ${c.children} children · ${c.killsN} kills`;
+  const par = w.byId.get(c.parent), kids = w.creatures.filter((k) => k.parent === c.id).length;
+  $('#ciSub').textContent = `#${c.id} · gen ${c.gen} · ${kids}/${c.children} children alive · parent ${par ? 'alive' : c.parent ? 'gone' : 'founder'} · ${c.killsN} kills · ${c.builtN} walls built${c.raidN ? ` · ${c.raidN} raided` : ''}${c.sick > 0 ? ' · sick' : c.immune ? ' · immune' : ''}`;
   const bar = (k, v, max, col, txt) => `<div class="barrow"><span>${k}</span><div class="track"><div class="fill" style="width:${clamp(v / max, 0, 1) * 100}%;background:${col}"></div></div><span class="v">${txt}</span></div>`;
   $('#ciBars').innerHTML =
     bar('Energy', c.energy, c.maxE, '#ffc78a', `${c.energy.toFixed(0)}/${c.maxE.toFixed(0)}`) +
     bar('Health', c.hp, c.maxHp, '#8fe3b8', `${Math.round((c.hp / c.maxHp) * 100)}%`) +
     bar('Age', c.age, c.life, '#9fb7ff', `${Math.round((c.age / c.life) * 100)}%`) +
-    bar('Glow', c.signal, 1, hsl(c.g.hue2, 0.9, 0.65), c.signal.toFixed(2));
-  $('#ciBrain').textContent = `${c.brain.neurons} neurons · ${c.brain.synapses} synapses · IQ ${c.brain.iq}`;
+    bar('Glow', c.signal, 1, hsl(c.g.hue2, 0.9, 0.65), c.signal.toFixed(2)) +
+    bar('Carrying', c.carry, 1, '#c9a26b', c.carry >= 1 ? 'block' : Math.round(c.carry * 100) + '%') +
+    bar('Shelter', c.shelter, 1, '#b8a4ff', Math.round(c.shelter * 100) + '%') +
+    [...state.brain.memory(c.slot)].map((v, i) => bar('Memory ' + (i + 1), Math.abs(v), 1, v >= 0 ? '#ffc78a' : '#9fb7ff', v.toFixed(2))).join('') +
+    bar('Learned', Math.min(1, state.brain.drift(c.slot, c.g) * 4), 1, '#ff9fd0', (state.brain.drift(c.slot, c.g) * 100).toFixed(1) + '% rewired');
+  $('#ciBrain').textContent = `${c.brain.neurons} neurons · ${c.brain.synapses} synapses · IQ ${c.brain.iq} · ${state.brain.kind.split(' ')[0]}`;
   drawBrain(c);
 }
 function drawBrain(cr) {
   const cv = $('#brainCanvas'); if (!cv.clientWidth) return;
   const [c, W, H] = sizeCanvas(cv);
   c.clearRect(0, 0, W, H);
-  const g = cr.g, nh = g.hidden, w = g.w;
-  // inputs: active eyes' channels + senses
+  const g = cr.g, nh = g.hidden, B = state.brain, w = B.weights(cr.slot), inp = B.inputs(cr.slot), hid = B.hidden(cr.slot), out = B.outputs(cr.slot);
   const inIdx = [];
   for (let e = 0; e < g.eyes; e++) for (let ch = 0; ch < CH; ch++) inIdx.push(e * CH + ch);
   for (let s = 0; s < SENSE_NAMES.length; s++) inIdx.push(MAX_EYES * CH + s);
-  const inVals = inIdx.map((i) => (i < MAX_EYES * CH ? cr.eyes[i] : [cr.energy / cr.maxE, cr.hp / cr.maxHp, cr.age / cr.life, Math.sin(state.world.tick * 0.05 + cr.id), 1, cr.heard, cr.pain, Math.hypot(cr.vx, cr.vy) / 2, Math.min(1, cr.crowd / 6)][i - MAX_EYES * CH]));
-  const colX = [54, W / 2, W - 52];
+  const inVals = inIdx.map((i) => inp[i]);
+  const colX = [62, W / 2 - 6, W - 58];
   const ys = (n, i) => 8 + (n === 1 ? (H - 16) / 2 : (i * (H - 16)) / (n - 1));
-  const chCol = ['#8fe3b8', '#ff8a8a', '#ffb36b', '#9fb7ff'];
-  // edges in->hidden
+  const chCol = ['#8fe3b8', '#ff8a8a', '#ffb36b', '#9fb7ff', '#c9a26b'];
   c.lineWidth = 0.6;
-  for (let a = 0; a < inIdx.length; a++) for (let j = 0; j < nh; j++) {
-    const wt = w[O_IH + inIdx[a] * H_MAX + j]; if (!wt) continue;
-    const act = Math.abs(inVals[a]);
-    c.strokeStyle = wt > 0 ? `rgba(143,227,184,${0.05 + act * Math.min(1, Math.abs(wt)) * 0.5})` : `rgba(255,138,138,${0.05 + act * Math.min(1, Math.abs(wt)) * 0.5})`;
-    c.beginPath(); c.moveTo(colX[0], ys(inIdx.length, a)); c.lineTo(colX[1], ys(nh, j)); c.stroke();
+  for (let a = 0; a < inIdx.length; a++) {
+    const act = Math.abs(inVals[a]); if (act < 0.01) continue;
+    for (let j = 0; j < nh; j++) {
+      const wt = w[O_IH + inIdx[a] * H_MAX + j]; if (!wt) continue;
+      c.strokeStyle = wt > 0 ? `rgba(143,227,184,${0.04 + act * Math.min(1, Math.abs(wt)) * 0.5})` : `rgba(255,138,138,${0.04 + act * Math.min(1, Math.abs(wt)) * 0.5})`;
+      c.beginPath(); c.moveTo(colX[0], ys(inIdx.length, a)); c.lineTo(colX[1], ys(nh, j)); c.stroke();
+    }
   }
   for (let j = 0; j < nh; j++) for (let m = 0; m < N_OUT; m++) {
-    const wt = cr.wHO[j * N_OUT + m]; if (!wt) continue;
-    const act = Math.abs(cr.h[j]);
-    c.strokeStyle = wt > 0 ? `rgba(143,227,184,${0.06 + act * Math.min(1, Math.abs(wt)) * 0.6})` : `rgba(255,138,138,${0.06 + act * Math.min(1, Math.abs(wt)) * 0.6})`;
+    const wt = w[O_HO + j * N_OUT + m]; if (!wt) continue;
+    const act = Math.abs(hid[j]);
+    c.strokeStyle = wt > 0 ? `rgba(143,227,184,${0.05 + act * Math.min(1, Math.abs(wt)) * 0.6})` : `rgba(255,138,138,${0.05 + act * Math.min(1, Math.abs(wt)) * 0.6})`;
     c.lineWidth = 0.4 + Math.min(2, Math.abs(wt));
     c.beginPath(); c.moveTo(colX[1], ys(nh, j)); c.lineTo(colX[2], ys(N_OUT, m)); c.stroke();
   }
-  c.font = '9.5px JetBrains Mono, monospace'; c.textBaseline = 'middle';
-  const node = (x, y, v, r, col) => {
-    c.fillStyle = '#0f1c26'; c.beginPath(); c.arc(x, y, r + 1.5, 0, 6.29); c.fill();
-    c.fillStyle = col.replace('A', clamp(0.2 + Math.abs(v) * 0.8, 0.2, 1).toFixed(2)); c.beginPath(); c.arc(x, y, r, 0, 6.29); c.fill();
+  c.font = '9px JetBrains Mono, monospace'; c.textBaseline = 'middle';
+  const node = (x, y, v, r, rgb) => {
+    c.fillStyle = '#0f1c26'; c.beginPath(); c.arc(x, y, r + 1.2, 0, 6.29); c.fill();
+    c.fillStyle = `rgba(${rgb},${clamp(0.2 + Math.abs(v) * 0.8, 0.2, 1).toFixed(2)})`; c.beginPath(); c.arc(x, y, r, 0, 6.29); c.fill();
   };
+  const hex = (h) => `${parseInt(h.slice(1, 3), 16)},${parseInt(h.slice(3, 5), 16)},${parseInt(h.slice(5, 7), 16)}`;
+  const every = inIdx.length > 40 ? 3 : inIdx.length > 24 ? 2 : 1;
   inIdx.forEach((idx, a) => {
     const y = ys(inIdx.length, a), v = inVals[a];
     const isEye = idx < MAX_EYES * CH;
-    const col = isEye ? chCol[idx % CH] : '#e8e2d0';
-    node(colX[0], y, v, Math.min(4, (H - 16) / inIdx.length / 2.2), col.length === 7 ? `rgba(${parseInt(col.slice(1, 3), 16)},${parseInt(col.slice(3, 5), 16)},${parseInt(col.slice(5, 7), 16)},A)` : col);
-    if (inIdx.length <= 22 || a % 2 === 0) {
+    node(colX[0], y, v, Math.min(3.5, (H - 16) / inIdx.length / 2.1), isEye ? hex(chCol[idx % CH]) : '232,226,208');
+    if (a % every === 0) {
       c.fillStyle = '#9fb3a9'; c.textAlign = 'right';
-      c.fillText(isEye ? `eye${Math.floor(idx / CH) + 1} ${['🌿', 'prey', 'thr', 'kin'][idx % CH]}` : SENSE_NAMES[idx - MAX_EYES * CH], colX[0] - 7, y);
+      c.fillText(isEye ? `eye${Math.floor(idx / CH) + 1} ${CH_NAMES[idx % CH]}` : SENSE_NAMES[idx - MAX_EYES * CH], colX[0] - 6, y);
     }
   });
-  for (let j = 0; j < nh; j++) node(colX[1], ys(nh, j), cr.h[j], 4.5, cr.h[j] >= 0 ? 'rgba(255,199,138,A)' : 'rgba(159,183,255,A)');
+  for (let j = 0; j < nh; j++) node(colX[1], ys(nh, j), hid[j], 4, hid[j] >= 0 ? '255,199,138' : '159,183,255');
   for (let m = 0; m < N_OUT; m++) {
-    const y = ys(N_OUT, m), v = cr.out[m];
-    node(colX[2], y, v, 6, v >= 0 ? 'rgba(255,199,138,A)' : 'rgba(159,183,255,A)');
-    c.fillStyle = '#eef3ea'; c.textAlign = 'left'; c.fillText(OUT_NAMES[m], colX[2] + 10, y);
+    const y = ys(N_OUT, m), v = out[m];
+    node(colX[2], y, v, 5, v >= 0 ? '255,199,138' : '159,183,255');
+    c.fillStyle = '#eef3ea'; c.textAlign = 'left'; c.fillText(OUT_NAMES[m], colX[2] + 9, y);
   }
 }
 function setFollowBtn() { $('#ciFollow').classList.toggle('on', state.follow); $('#ciFollow').textContent = state.follow ? 'Following' : 'Follow'; }
@@ -460,29 +470,33 @@ function saveWorld() {
   const data = {
     v: 1, seed: w.seed, W: w.W, H: w.H, tick: w.tick, rules: state.rules,
     trees: w.trees.map(({ x, y, r, seed, hue, fruitHue }) => ({ x, y, r, seed, hue, fruitHue })),
+    blocks: (() => { const a = []; for (let b = 0; b < w.bOwner.length; b++) if (w.bOwner[b] > 0) a.push(b, w.bOwner[b], Math.round(w.bHp[b])); return a; })(),
     species: [...w.species.values()].filter((s) => s.count > 0).map((s) => ({ ...s, rep: serializeGenome(s.rep) })),
     creatures: w.creatures.map((c) => ({ x: c.x, y: c.y, a: c.a, e: c.energy, age: c.age, gen: c.gen, sp: c.sp, g: serializeGenome(c.g) })),
   };
-  try { localStorage.setItem('primordia.save', JSON.stringify(data)); toast(`Saved ${data.creatures.length} creatures.`); }
+  try { localStorage.setItem('primordia.v2.save', JSON.stringify(data)); toast(`Saved ${data.creatures.length} creatures.`); }
   catch { toast('Could not save here (storage full or blocked).'); }
 }
 function loadWorld() {
   let data;
-  try { data = JSON.parse(localStorage.getItem('primordia.save')); } catch {}
+  try { data = JSON.parse(localStorage.getItem('primordia.v2.save')); } catch {}
   if (!data) { toast('No saved world yet.'); return; }
   setSeed(data.seed);
   Object.assign(state.rules, data.rules);
-  const w = new World({ W: data.W, H: data.H, seed: data.seed, rules: state.rules });
+  if (state.world) for (const c of state.world.creatures) state.brain.release(c.slot);
+  const w = new World({ W: data.W, H: data.H, seed: data.seed, rules: state.rules, brain: state.brain });
+  if (data.blocks) { for (let i = 0; i < data.blocks.length; i += 3) { const b = data.blocks[i]; w.bOwner[b] = data.blocks[i + 1]; w.bHp[b] = data.blocks[i + 2]; if (data.blocks[i + 1] > 0) w.blockCount++; } }
   w.tick = data.tick;
   for (const t of data.trees) w.trees.push({ ...t, timer: 100 });
   for (let i = 0; i < w.rules.maxPlants * 0.6; i++) w.spawnPlant();
   const map = new Map();
-  for (const s of data.species) { const sp = { ...s, rep: deserializeGenome(s.rep), count: 0 }; w.species.set(sp.id, sp); w.speciesOrder.push(sp.id); map.set(s.id, sp); w.nextSpecies = Math.max(w.nextSpecies, s.id + 1); }
+  for (const s of data.species) { const sp = { ...s, rep: deserializeGenome(s.rep), count: 0, blocks: 0 }; w.species.set(sp.id, sp); w.speciesOrder.push(sp.id); map.set(s.id, sp); w.nextSpecies = Math.max(w.nextSpecies, s.id + 1); }
   for (const c of data.creatures) {
     const sp = map.get(c.sp); if (!sp) continue;
     const cr = w.spawn(deserializeGenome(c.g), c.x, c.y, sp, c.gen, null, c.e);
     cr.a = c.a; cr.age = c.age;
   }
+  for (let b = 0; b < w.bOwner.length; b++) { const sp = w.species.get(w.bOwner[b]); if (sp) sp.blocks++; }
   w.log('A saved world awakens.', 140);
   state.world = w; state.selected = null; state.renderer.setWorld(w);
   buildRules(); toast('World loaded.');
@@ -514,6 +528,7 @@ function bindUI() {
   $('#evBloom').onclick = () => { state.world.bloom(); toast('A great bloom!'); };
   $('#evPlague').onclick = () => { state.world.plague(); toast('Plague strikes the most common species.'); };
   $('#evMeteor').onclick = () => { const w = state.world; w.meteor(Math.random() * w.W, Math.random() * w.H); };
+  $('#evWinter').onclick = () => { state.world.winter(); toast('A bitter cold snap!'); };
   $('#evFounders').onclick = () => { const w = state.world; for (let i = 0; i < 2; i++) w.foundSpecies(14); toast('New founders arrive.'); };
   $('#foundIn').oninput = (e) => { $('#foundOut').textContent = e.target.value; };
   $('#newWorld').onclick = () => newWorld(+$('#seedIn').value || undefined, $('#sizeSel').value, +$('#foundIn').value);
@@ -527,12 +542,12 @@ function bindUI() {
 // ---------- boot ----------
 const params = new URLSearchParams(location.search);
 if (window.innerWidth <= 820) document.body.classList.add('panel-hidden');
+state.brain = await createBrain();
 bindUI();
 buildRules();
 newWorld(params.has('seed') ? +params.get('seed') : undefined, params.get('size') || 'm', 6);
 bindInput();
-// warm-up so the first frame already looks alive
 for (let i = 0; i < 120; i++) state.world.step();
-setTimeout(() => toast('Tap a creature to see its brain. Drag to explore, pinch or scroll to zoom.'), 600);
+setTimeout(() => toast(`Brains running on ${state.brain.kind}. Tap a creature to see it think.`), 600);
 requestAnimationFrame(loop);
 window.primordia = state; // handy for tinkering in devtools

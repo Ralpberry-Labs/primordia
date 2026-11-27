@@ -1,7 +1,7 @@
 // Pixel-art renderer: terrain, plants, trees, creatures, light.
 import { TAU, clamp, hslToRgb, rgb, hsl, makeNoise } from './util.js';
 import { bodyMask } from './genome.js';
-import { TERRAIN_RES } from './world.js';
+import { TERRAIN_RES, BS } from './world.js';
 
 const SP = 2; // sprite sub-pixels per body pixel
 
@@ -301,6 +301,7 @@ export class Renderer {
       const S = t.sprite.width * 2;
       ctx.drawImage(t.sprite, t.x - S / 2, t.y - S / 2 - 4, S, S);
     }
+    this.drawWalls(ctx, vx0, vx1, vy0, vy1);
     // groups
     if (this.showGroups) {
       ctx.lineWidth = 1.2 / c.zoom;
@@ -343,10 +344,20 @@ export class Renderer {
       ctx.scale(grow, grow);
       if (cr.pain > 0.5) ctx.globalAlpha = 0.6 + 0.4 * Math.sin(frame);
       ctx.drawImage(sp.frames[fr], -S / 2, -S / 2, S, S);
+      if (cr.carry >= 1 && c.zoom > 1.2) { ctx.fillStyle = '#b08a5a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 2.4); ctx.fillStyle = '#e0c49a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 0.8); }
       ctx.restore();
+      if (cr.sick > 0 && c.zoom > 0.8) { ctx.fillStyle = 'rgba(170,220,60,0.28)'; ctx.beginPath(); ctx.arc(cr.x, cr.y, cr.radius * 1.1, 0, TAU); ctx.fill(); }
       ctx.globalAlpha = 1;
     }
     if (selected && !selected.dead) {
+      // family ties: parent and living children
+      ctx.lineWidth = 1 / c.zoom; ctx.setLineDash([3 / c.zoom, 3 / c.zoom]);
+      const par = w.byId.get(selected.parent);
+      if (par) { ctx.strokeStyle = 'rgba(255,220,150,0.7)'; ctx.beginPath(); ctx.moveTo(selected.x, selected.y); ctx.lineTo(par.x, par.y); ctx.stroke(); }
+      ctx.strokeStyle = 'rgba(160,230,200,0.7)';
+      for (const k of w.creatures) if (k.parent === selected.id) { ctx.beginPath(); ctx.moveTo(selected.x, selected.y); ctx.lineTo(k.x, k.y); ctx.stroke(); }
+      ctx.setLineDash([]);
+      if (selected.homeX >= 0) { ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.strokeRect(selected.homeX - BS / 2, selected.homeY - BS / 2, BS, BS); }
       ctx.strokeStyle = '#fff6c8'; ctx.lineWidth = 1.5 / c.zoom;
       ctx.beginPath(); ctx.arc(selected.x, selected.y, selected.radius + 6 + Math.sin(frame * 0.1) * 1.5, 0, TAU); ctx.stroke();
     }
@@ -395,6 +406,49 @@ export class Renderer {
     }
   }
 }
+
+Renderer.prototype.drawWalls = function (ctx, vx0, vx1, vy0, vy1) {
+  const w = this.world;
+  if (!w.blockCount && !w.bOwner.some((o) => o < 0)) return;
+  const bw = w.bw, O = w.bOwner, HP = w.bHp;
+  const bx0 = Math.max(0, (vx0 / BS) | 0), bx1 = Math.min(bw - 1, (vx1 / BS) | 0);
+  const by0 = Math.max(0, (vy0 / BS) | 0), by1 = Math.min(w.bh - 1, (vy1 / BS) | 0);
+  const pal = this._wallPal || (this._wallPal = new Map());
+  const colors = (o) => {
+    let p = pal.get(o);
+    const sp = w.species.get(o), hue = sp ? sp.hue : 0;
+    if (!p || p.hue !== hue) {
+      p = o < 0 ? { hue, base: '#6d665c', top: '#8f877b', dark: '#4a443d', mort: '#5b554d' }
+        : { hue, base: hsl(hue, 0.28, 0.42), top: hsl(hue, 0.35, 0.62), dark: hsl(hue, 0.3, 0.24), mort: hsl(hue, 0.25, 0.34) };
+      pal.set(o, p);
+    }
+    return p;
+  };
+  // drop shadows first
+  ctx.fillStyle = 'rgba(10,20,15,0.28)';
+  for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+    const b = y * bw + x, o = O[b];
+    if (o && O[b + bw] !== o) ctx.fillRect(x * BS + 1.5, (y + 1) * BS, BS, 3);
+  }
+  for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+    const b = y * bw + x, o = O[b];
+    if (!o) continue;
+    const p = colors(o), X = x * BS, Y = y * BS;
+    ctx.globalAlpha = o < 0 ? 0.55 : 0.55 + Math.min(1, HP[b] / 120) * 0.45;
+    ctx.fillStyle = p.base; ctx.fillRect(X, Y, BS, BS);
+    // brick courses
+    ctx.fillStyle = p.mort;
+    ctx.fillRect(X, Y + BS * 0.5, BS, 0.8);
+    ctx.fillRect(X + ((x + y) % 2 ? BS * 0.5 : 0), Y, 0.8, BS * 0.5);
+    ctx.fillRect(X + ((x + y) % 2 ? 0 : BS * 0.5), Y + BS * 0.5, 0.8, BS * 0.5);
+    if (O[b - bw] !== o) { ctx.fillStyle = p.top; ctx.fillRect(X, Y, BS, 2); }
+    if (O[b + bw] !== o) { ctx.fillStyle = p.dark; ctx.fillRect(X, Y + BS - 2, BS, 2); }
+    if (O[b - 1] !== o) { ctx.fillStyle = p.dark; ctx.fillRect(X, Y, 1, BS); }
+    if (O[b + 1] !== o) { ctx.fillStyle = p.dark; ctx.fillRect(X + BS - 1, Y, 1, BS); }
+    if (o > 0 && HP[b] < 50) { ctx.fillStyle = 'rgba(20,15,10,0.6)'; ctx.fillRect(X + 2, Y + 3, 3, 0.8); ctx.fillRect(X + 4, Y + 3.8, 0.8, 2); }
+  }
+  ctx.globalAlpha = 1;
+};
 
 // Large portrait of a creature for the inspector / species list.
 export function drawPortrait(canvas, g, frame = 0) {

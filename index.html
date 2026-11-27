@@ -78,6 +78,9 @@
                 <option value="speed">Speed</option>
                 <option value="armor">Armor</option>
                 <option value="mutRate">Mutation rate</option>
+                <option value="learned">Lifetime learning (rewired %)</option>
+                <option value="shelter">Shelter (living in walls)</option>
+                <option value="builders">Share of builders</option>
                 <option value="plastic">Learning</option>
               </select>
             </div>
@@ -118,7 +121,7 @@
             <div class="bars" id="ciBars"></div>
             <div class="card">
               <div class="card-h"><h3>Brain</h3><span class="muted" id="ciBrain"></span></div>
-              <canvas id="brainCanvas" class="chart" height="230"></canvas>
+              <canvas id="brainCanvas" class="chart" height="360"></canvas>
             </div>
             <div class="card">
               <div class="card-h"><h3>Genome</h3></div>
@@ -135,6 +138,7 @@
               <button class="btn" id="evBloom">🌸 Bloom</button>
               <button class="btn" id="evPlague">☣ Plague</button>
               <button class="btn" id="evMeteor">☄ Random meteor</button>
+              <button class="btn" id="evWinter">❄ Cold snap</button>
               <button class="btn" id="evFounders">✦ New founders</button>
             </div>
           </div>
@@ -168,13 +172,16 @@
         <section class="pane" data-pane="about">
           <div class="card prose">
             <h3>What you are looking at</h3>
-            <p>Every creature carries a <b>genome</b>: body pixels, colours, size, muscle, armour, diet, the number of eyes, their field of view and range, mouth size, litter size, lifespan, and even its own <b>mutation rate</b> and <b>learning rate</b>. The genome also holds a small <b>recurrent neural network</b> — its brain.</p>
-            <p>Each eye watches a slice of the world and reports four things: plants, prey or meat, threats, and kin. The brain also feels hunger, health, age, pain, a heartbeat clock, crowding, and the glow signals of others. It decides how to move and turn, when to bite, when to glow, when to share food, and when to breed.</p>
-            <p>No behaviour is programmed. Creatures that find food survive long enough to breed; their children inherit a <b>mutated</b> (and, with sexual reproduction, <b>recombined</b>) copy of the genome. Brains can grow new neurons, wire or prune synapses. When a lineage drifts far enough from its ancestors it becomes a <b>new species</b>, keeping its genus name.</p>
-            <p>Watch for emergence: herds forming, packs of predators hunting together (bites from kin stack), creatures sharing food with starving relatives, night-time glow languages, arms races between armour and jaws, and brains getting bigger when you lower the brain cost.</p>
+            <p>Every creature carries a <b>genome</b>: its body pixels, colours, size, muscle, armour and diet; its eyes (count, field of view, range) and mouth; its litter size and lifespan; and even its own <b>mutation rate</b> and <b>learning rate</b>. The genome also wires a <b>neural network brain</b>.</p>
+            <h3>Minds, written in C++</h3>
+            <p>Brains run in <b>C++ compiled to WebAssembly</b>, all evaluated in one batch call each tick. Each brain is a recurrent network with up to 24 neurons, 51 senses and 13 actions. The recurrent loop gives short-term memory, and <b>4 gated memory cells</b> hold information for as long as the creature chooses to keep it. Brains also <b>learn from experience</b> through reward-modulated Hebbian learning with eligibility traces: food and safety strengthen the synapses that led to them, and pain weakens them. The Creature tab shows how much each brain has rewired itself during its life. You can make learned wisdom heritable under <i>Mind → Inherit learned wisdom</i>.</p>
+            <h3>Building, families, conflict</h3>
+            <p>Creatures pick up stone, sand and wood as they wander, and can decide to place a wall. Walls placed next to their kin's walls are stronger, lone walls crumble, and walls need upkeep. Living among your own walls saves energy, especially on cold nights and in winter. Young born there start stronger, and defenders inside are harder to hurt. Strangers can't pass a species' walls, so they have to break them down. Creatures sense their family (parents, children, siblings), feed hungry relatives first, and sense where home is.</p>
+            <p>Fights follow real-world logic. Several attackers on one victim add force roughly with the square of their numbers, so a mob of small creatures can kill a giant. Big bodies out-muscle small ones, and starving creatures fight weakly. Disease breaks out in crowds, spreads by contact, and leaves survivors immune. Forests spread seeds, and saplings grow up into fruiting trees.</p>
+            <p>None of this behaviour is scripted. Creatures that find food, shelter and safety live to breed, and their children inherit mutated, recombined genomes. Lineages that drift far enough become <b>new species</b>.</p>
             <h3>Controls</h3>
-            <p>Drag to pan, scroll or pinch to zoom. Space pauses. Use the tools to drop food, plant trees, seed new life, or call down a meteor. Everything in <b>Rules</b> changes live.</p>
-            <p class="muted">Inspired by artificial-life work like Polyworld, The Bibites and NEAT neuroevolution. Pure HTML, CSS and JavaScript — no libraries.</p>
+            <p>Drag to pan, scroll or pinch to zoom, and press Space to pause. The tools drop food, plant trees, seed new life, or call down a meteor. Everything in <b>Rules</b> changes live.</p>
+            <p class="muted">Inspired by artificial-life work like Polyworld, The Bibites and NEAT neuroevolution. HTML, CSS, JavaScript and C++ (WebAssembly), with no libraries.</p>
             <p><a href="https://github.com/Ralpberry-Labs/primordia" target="_blank" rel="noopener">Source on GitHub</a> · a Ralpberry Labs toy</p>
           </div>
         </section>
