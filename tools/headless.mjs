@@ -25,3 +25,6 @@ for (let i = 1; i <= T; i++) {
   }
 }
 for (const e of w.events.slice(0, 25).reverse()) console.log('  ·', e.t, e.msg);
+const M = w.market;
+console.log(`market: trades ${M.trades} barters ${M.barters} price ${M.cur.toFixed(2)} money ${(M.money || 0).toFixed(0)} gini ${(M.gini || 0).toFixed(2)} | social`, JSON.stringify(w.social));
+for (const e of w.events) if (/trade|money/i.test(e.msg)) console.log('  ·', e.t, e.msg);

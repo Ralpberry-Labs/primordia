@@ -56,6 +56,7 @@
       <div class="tabs" role="tablist">
         <button class="tab active" data-tab="life">Life</button>
         <button class="tab" data-tab="creature">Creature</button>
+        <button class="tab" data-tab="market">Market</button>
         <button class="tab" data-tab="rules">Rules</button>
         <button class="tab" data-tab="story">Story</button>
         <button class="tab" data-tab="about">About</button>
@@ -138,6 +139,31 @@
           </div>
         </section>
 
+        <section class="pane" data-pane="market">
+          <div class="card">
+            <div class="card-h"><h3>Food price</h3><span class="muted" id="mkPrice"></span></div>
+            <canvas class="chart" id="priceChart" height="130"></canvas>
+            <div class="kpis" id="mkKpis"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Species wealth index</h3><span class="muted">wallets + stash</span></div>
+            <ul class="tickers" id="mkIndex"></ul>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Live trades</h3><span class="muted" id="mkCount"></span></div>
+            <ul class="feed" id="mkFeed"></ul>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Richest</h3></div>
+            <ul class="feed" id="mkRich"></ul>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Jobs &amp; society</h3></div>
+            <div id="mkRoles"></div>
+            <div class="kpis" id="mkSocial"></div>
+          </div>
+        </section>
+
         <section class="pane" data-pane="rules">
           <div id="rulesBox"></div>
           <div class="card">
@@ -189,6 +215,10 @@
             <p>Creatures pick up stone, sand and wood as they wander, and can decide to place a wall. Walls placed next to their kin's walls are stronger, lone walls crumble, and walls need upkeep. Living among your own walls saves energy, especially on cold nights and in winter. Young born there start stronger, and defenders inside are harder to hurt. Strangers can't pass a species' walls, so they have to break them down. Creatures sense their family (parents, children, siblings), feed hungry relatives first, and sense where home is.</p>
             <p>Fights follow real-world logic. Several attackers on one victim add force roughly with the square of their numbers, so a mob of small creatures can kill a giant. Big bodies out-muscle small ones, and starving creatures fight weakly. Disease breaks out in crowds, spreads by contact, and leaves survivors immune. Forests spread seeds, and saplings grow up into fruiting trees.</p>
             <p>None of this behaviour is scripted. Creatures that find food, shelter and safety live to breed, and their children inherit mutated, recombined genomes. Lineages that drift far enough become <b>new species</b>.</p>
+            <h3>Society and money</h3>
+            <p>Each creature remembers up to 8 others, with feelings from love to hate. Gifts, trades and mating build bonds, and bites build grudges. Brains sense whether the one in front is a friend or a foe, and whether a friend nearby is in trouble, so defending friends, bullying, and life-long partners can all emerge. Food eaten beyond fullness is stashed, shells found on beaches serve as money, and two brain outputs decide when to trade and at what price. Hungry creatures buy food with shells or barter stone for it, and wallets pass to heirs when a creature dies. The <b>Market</b> tab shows prices, a live trade feed, wealth by species, inequality and jobs.</p>
+            <h3>Nature</h3>
+            <p>Creatures are diploid, with traits built from many genes, and children inherit through meiosis with crossing-over and copying errors. Weather brings rain, droughts, lightning and wildfire. Temperature falls with altitude and fur adapts to it. Fish live in lakes and amphibians can evolve. Walls stack in 3D, and the richest fruit hangs in the treetops where only climbers can reach it.</p>
             <h3>Controls</h3>
             <p>Drag to pan, scroll or pinch to zoom, and press Space to pause. The tools drop food, plant trees, seed new life, or call down a meteor. Everything in <b>Rules</b> changes live.</p>
             <p class="muted">Inspired by artificial-life work like Polyworld, The Bibites and NEAT neuroevolution. HTML, CSS, JavaScript and C++ (WebAssembly), with no libraries.</p>

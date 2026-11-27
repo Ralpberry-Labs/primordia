@@ -7,15 +7,15 @@ export const CH_NAMES = ['🌿', 'prey', 'thr', 'kin', 'wall'];
 export const N_MEM = 4;                 // gated long-term memory cells (handled in C++)
 export const SENSE_NAMES = ['energy', 'health', 'age', 'clock', 'bias', 'glow', 'pain', 'speed', 'crowd',
   'carry', 'shelter', 'home↺', 'home↑', 'home', 'builders', 'family', 'reward',
-  'voice1', 'voice2', 'temp', 'water', 'fire', 'surprise', 'height', 'mem1', 'mem2', 'mem3', 'mem4'];
-export const N_SENSE = SENSE_NAMES.length;           // 28 (last 4 are memory, filled by the brain)
+  'voice1', 'voice2', 'temp', 'water', 'fire', 'surprise', 'height', 'wallet', 'stash', 'friend', 'friendHurt', 'mem1', 'mem2', 'mem3', 'mem4'];
+export const N_SENSE = SENSE_NAMES.length;           // 32 (last 4 are memory, filled by the brain)
 export const S = Object.fromEntries(SENSE_NAMES.map((n, i) => [n, i]));
-export const N_IN = MAX_EYES * CH + N_SENSE;         // 58
+export const N_IN = MAX_EYES * CH + N_SENSE;         // 62
 export const H_MAX = 32;
-export const OUT_NAMES = ['move', 'turn', 'bite', 'glow', 'share', 'breed', 'build', 'voice1', 'voice2',
+export const OUT_NAMES = ['move', 'turn', 'bite', 'glow', 'share', 'breed', 'build', 'voice1', 'voice2', 'trade', 'price',
   'mem1←', 'mem2←', 'mem3←', 'mem4←', 'gate A', 'gate B', 'value'];
-export const N_OUT = OUT_NAMES.length;               // 16
-export const OUT = { move: 0, turn: 1, bite: 2, signal: 3, share: 4, breed: 5, build: 6, voice1: 7, voice2: 8, mem: 9, gateA: 13, gateB: 14, value: 15 };
+export const N_OUT = OUT_NAMES.length;               // 18
+export const OUT = { move: 0, turn: 1, bite: 2, signal: 3, share: 4, breed: 5, build: 6, voice1: 7, voice2: 8, trade: 9, price: 10, mem: 11, gateA: 15, gateB: 16, value: 17 };
 
 // weight layout inside one Float32Array
 export const O_IH = 0;
@@ -47,6 +47,7 @@ export const GENES = {
   habitat:  { min: 0, max: 1, sd: 0.04, label: 'Habitat (land→water)' },
   pref:     { min: 0, max: 360, sd: 12, wrap: true, label: 'Mate colour preference' },
   choosy:   { min: 0, max: 0.9, sd: 0.04, label: 'Choosiness' },
+  risk:     { min: 0, max: 1, sd: 0.05, label: 'Risk appetite' },
 };
 export const INT_GENES = {
   eyes:   { min: 1, max: MAX_EYES, label: 'Eyes' },
@@ -75,6 +76,7 @@ export function randomGenome(opts = {}) {
   g.fur = opts.fur ?? rr(0.1, 0.5);
   g.habitat = opts.habitat ?? rr(0, 0.12);
   g.choosy = rr(0, 0.25);
+  g.risk = rr(0.1, 0.8);
   if (opts.hue !== undefined) g.hue = opts.hue;
   g.pref = (g.hue + randn() * 10 + 360) % 360;
   if (g.habitat > 0.6) { g.speed = rr(1, 1.6); g.size = rr(1.3, 2.2); }
@@ -118,7 +120,9 @@ export function randomGenome(opts = {}) {
   }
   g.w[O_BO + OUT.build] = rr(-0.8, 0.2);
   if (chance(0.5)) { g.w[H(B + S['home↺'], 4)] = rr(0.5, 1.5); g.w[HO(4, OUT.turn)] = rr(0.3, 1.2); }
+  // faint urge to swap surplus food (and to buy when hungry); prices are left to learning
   if (g.hidden < 5) g.hidden = 5;
+  g.w[O_BO + OUT.trade] = rr(-0.3, 0.6);   // a mild, varied lean toward trading; the rest is learned
   return encode(g);
 }
 
@@ -268,7 +272,7 @@ export function heterozygosity(g) {
 export function distance(a, b) {
   let d = 0;
   for (const k in GENES) {
-    if (k === 'lifespan' || k === 'mutRate' || k === 'plastic' || k === 'repro' || k === 'sat' || k === 'light' || k === 'curiosity' || k === 'choosy') continue;
+    if (k === 'lifespan' || k === 'mutRate' || k === 'plastic' || k === 'repro' || k === 'sat' || k === 'light' || k === 'curiosity' || k === 'choosy' || k === 'risk') continue;
     const r = GENES[k];
     let x = Math.abs(a[k] - b[k]);
     if (r.wrap) x = Math.min(x, 360 - x);

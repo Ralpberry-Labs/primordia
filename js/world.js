@@ -52,6 +52,10 @@ export const RULES = {
   mateChoice:    [1, 0, 1, 1, 'Mate choice', 'Evolution', 'Creatures only mate with partners whose colour matches their (evolving) taste — sexual selection.'],
   seedDispersal: [1, 0, 1, 1, 'Seed dispersal', 'Evolution', 'Eaten fruit and plants are carried in the gut and sprout where the animal goes.'],
   speciesGap:    [1.0, 0.4, 3, 0.05, 'Species threshold', 'Evolution', 'Genetic distance that splits off a new species.'],
+  economy:       [1, 0, 1, 1, 'Economy', 'Society', 'Creatures can stash surplus food and trade it — for shells (money) or by barter.'],
+  shellRate:     [1.0, 0, 4, 0.05, 'Shell finds', 'Society', 'How often beach-combers find shells: the money supply.'],
+  inheritance:   [1, 0, 1, 1, 'Inheritance', 'Society', 'Wallets and stashes pass to children (or kin) at death. Off = wealth vanishes.'],
+  socialMemory:  [1.0, 0, 3, 0.05, 'Grudges & bonds', 'Society', 'How strongly gifts, trades, bites and love change how creatures feel about each other.'],
   numbers:       [1.0, 0, 3, 0.05, 'Strength in numbers', 'Conflict', 'Each extra attacker on the same victim adds force, so a mob of small creatures can bring down a giant.'],
   sizeMatters:   [1.0, 0, 2, 0.05, 'Size advantage', 'Conflict', 'How much bigger bodies out-muscle smaller ones in a fight.'],
   disease:       [1.0, 0, 4, 0.05, 'Disease', 'Conflict', 'Sickness breaks out in crowds and spreads by contact; survivors become immune.'],
@@ -109,6 +113,8 @@ export class World {
     this.bHp = new Float32Array(this.bw * this.bh);   // health of the top block
     this.blockCount = 0;
     this.structVersion = 0;
+    this.market = { feed: [], prices: [], cur: 1, vol: 0, volNow: 0, sumP: 0, nP: 0, trades: 0, barters: 0, index: new Map() };
+    this.social = { bullying: 0, defends: 0, gifts: 0, bonds: 0, roles: {} };
     this.genTerrain();
     this.climate = new Climate(this);
   }
@@ -240,6 +246,8 @@ export class World {
       cool: 0, buildCool: 0, birthTick: this.tick, carry: 0, shelter: 0, homeX: -1, homeY: -1, homeD: 1, builders: 0, family: 0,
       lastE: 0, lastShelter: 0, reward: 0, lastBuild: -9999, shared: 0, sick: 0, immune: false,
       v1: 0, v2: 0, hv1: 0, hv2: 0, temp: 15, fire: 0, gut: 0, taught: 0, inWater: false, idx: 0,
+      wallet: rr(0, 3), stash: 0, rel: new Map(), friend: 0, friendHurt: 0, tradeOut: -1, priceOut: 0, tradesN: 0, gifts: 0, defends: 0, bullied: 0, role: 'young', bond: 0,
+      act: { farm: 0, build: 0, hunt: 0, trade: 0, care: 0, guard: 0 },
     };
     c.hp = c.maxHp; c.lastE = c.energy;
     const b = this.bAt(x, y);
@@ -525,6 +533,7 @@ export class World {
     cr.length = k;
 
     if (t % 30 === 0) { this.computeGroups(); this.sample(); }
+    if (t % 60 === 0) this.marketTick();
     if (t % 600 === 0) {
       const sick = cr.reduce((a, c) => a + (c.sick > 0 ? 1 : 0), 0);
       if (sick > 25 && !this._epidemic) { this._epidemic = true; this.log(`Epidemic! ${sick} creatures are sick`, 85); }
@@ -619,11 +628,13 @@ export class World {
       if (c._food && c._food.e <= 0.4) c._food = null;
       if (c._mate && c._mate.dead) c._mate = null;
       if (c._needy && c._needy.dead) c._needy = null;
+      if (c._partner && c._partner.dead) c._partner = null;
       return this.senseInputs(c);
     }
     const LR = 50, LR2 = LR * LR;
     let builders = 0, family = 0;
     let nearFood = null, nearFoodD = 1e9, target = null, targetD = 1e9, mate = null, needy = null, needS = 0;
+    let partner = null, nearest = null, nearD = 1e9, friendHurt = 0;
     const x0 = clamp(((c.x - LR) / CELL) | 0, 0, this.cols - 1), x1 = clamp(((c.x + LR) / CELL) | 0, 0, this.cols - 1);
     const y0 = clamp(((c.y - LR) / CELL) | 0, 0, this.rows - 1), y1 = clamp(((c.y + LR) / CELL) | 0, 0, this.rows - 1);
     const herbEff = 1 - g.diet, carnEff = g.diet;
@@ -644,6 +655,10 @@ export class World {
         if (kin && t - o.lastBuild < 240) builders++;
         const fam = kin && (o.id === c.parent || o.parent === c.id || (c.parent !== null && o.parent === c.parent));
         if (fam) family = Math.max(family, 1 - d / LR);
+        if (d < nearD) { nearD = d; nearest = o; }
+        if (!partner && d < 32 && o.tradeOut > 0.1 && (o.stash >= 3 || c.stash >= 3)) partner = o;
+        const af = c.rel.size ? (c.rel.get(o.id) || 0) : 0;
+        if (af > 0.3 && o.pain > 0.5) friendHurt = Math.max(friendHurt, af);
         const dz = o.z - c.z;
         // bodies push apart (heavier ones move less) — only on the same level
         const minD = (c.radius + o.radius) * 0.75;
@@ -686,7 +701,10 @@ export class World {
     if (!c.sick && !c.immune && V.crowd[i] >= 7 && chance(0.00004 * R.disease * V.crowd[i])) c.sick = ri(500, 900);
     c.heard = V.heard[i]; c.crowd = V.crowd[i]; c.hv1 = V.ov1[i]; c.hv2 = V.ov2[i];
     c.builders = Math.min(1, builders / 4); c.family = family;
-    c._food = nearFood; c._target = target; c._mate = mate; c._needy = needy;
+    c._food = nearFood; c._target = target; c._mate = mate; c._needy = needy; c._partner = partner;
+    const fo = target || nearest;
+    c.friend = fo && c.rel.size ? (c.rel.get(fo.id) || 0) : 0;
+    c.friendHurt = friendHurt;
     // culture: the young copy some of a nearby parent's learned behaviour
     if (R.culture > 0 && c.age < 1500 && (t + c.id) % 90 === 0 && c.parent) {
       const p = this.byId.get(c.parent);
@@ -735,6 +753,10 @@ export class World {
     inp[B + S.fire] = c.fire;
     inp[B + S.surprise] = brain.DELTA[s];
     inp[B + S.height] = c.z / 4;
+    inp[B + S.wallet] = Math.min(1.5, c.wallet / 10);
+    inp[B + S.stash] = Math.min(1.5, c.stash / 10);
+    inp[B + S.friend] = c.friend;
+    inp[B + S.friendHurt] = c.friendHurt;
   }
 
   act(c) {
@@ -808,13 +830,13 @@ export class World {
       const bx = c.x + Math.cos(c.a) * d, by = c.y + Math.sin(c.a) * d;
       const front = this.bAt(bx, by);
       if (front >= 0 && this.bOwner[front] === c.sp && this.bH[front] < R.maxHeight && this.bH[front] <= c.z + 1) {
-        this.placeBlock(c, front, true);                                     // build up
+        this.placeBlock(c, front, true); c.act.build += 1;                   // build up
         c.energy -= 2.2 * g.size; c.buildCool = 40;
       } else {
         let b = front;
         if (R.stigmergy > 0 && b >= 0) b = this.bestSpot(c, b, R.stigmergy);
         if (b >= 0 && !this.bOwner[b] && !this.isWater((b % this.bw + 0.5) * BS, ((b / this.bw | 0) + 0.5) * BS)) {
-          this.placeBlock(c, b, false);
+          this.placeBlock(c, b, false); c.act.build += 1;
           c.energy -= 1.8 * g.size; c.buildCool = 40;
         } else if (front >= 0 && this.bOwner[front] === c.sp && this.bHp[front] < WALL_MAX_HP * 0.8) {
           this.bHp[front] = Math.min(WALL_MAX_HP, this.bHp[front] + 80); c.carry = 0; c.buildCool = 20; c.lastBuild = this.tick;
@@ -825,7 +847,13 @@ export class World {
     // ---- eat ----
     if (nearFood && nearFood.e > 0) {
       const eff = nearFood.type === 2 ? carnEff * R.carnGain : herbEff * R.herbGain * (nearFood.type === 1 ? 1.15 : 1);
-      const bite = Math.min(nearFood.e, 0.9 * g.mouth * g.size, (c.maxE - c.energy) / Math.max(eff, 0.05));
+      let bite = Math.min(nearFood.e, 0.9 * g.mouth * g.size, (c.maxE - c.energy) / Math.max(eff, 0.05));
+      // full? keep the surplus: a stash of food that can be eaten later or traded
+      const cap = 4 + 6 * g.size;
+      if (R.economy && bite < 0.3 && c.stash < cap && eff > 0.3 && nearFood.type !== 2) {
+        const take = Math.min(nearFood.e, 0.6 * g.mouth * g.size);
+        nearFood.e -= take; c.stash = Math.min(cap, c.stash + take * eff / 6); c.act.farm += 0.2; bite = 0;
+      }
       if (bite > 0) {
         nearFood.e -= bite; c.energy += bite * eff; c.eatenE += bite * eff;
         if (nearFood.z > 0 && nearFood.e <= 0.4) {
@@ -833,8 +861,15 @@ export class World {
           const sp = this.species.get(c.sp);
           if (!sp.canopyLogged) { sp.canopyLogged = true; this.log(`${sp.name} climbed up and ate fruit from the treetops`, sp.hue); }
         }
+        if (nearFood.type !== 2) c.act.farm += 0.05;
         if (R.seedDispersal && nearFood.type !== 2 && !nearFood.aqua && !c.gut && chance(nearFood.type === 1 ? 0.5 : 0.08)) { c.gut = ri(150, 420); c.gutTree = nearFood.type === 1; }
       }
+    }
+    if (c.stash > 0 && c.energy < c.maxE * 0.4) { const u = Math.min(c.stash, 0.3); c.stash -= u; c.energy += u * 6; }
+    if (R.economy) {
+      if (tt === 2 && !water && chance(0.0015 * R.shellRate) && (this.market.money || 0) < 4000) c.wallet += 1;
+      c.tradeOut = out[OUT.trade]; c.priceOut = out[OUT.price];
+      if (c.tradeOut > 0.2 && c._partner && (this.tick + c.id) % 6 === 0) this.tryTrade(c, c._partner);
     }
     // seeds pass through the gut and sprout wherever the animal wandered
     if (c.gut > 0 && --c.gut === 0 && !water) {
@@ -859,6 +894,19 @@ export class World {
           const ts = this.species.get(target.sp), ms = this.species.get(c.sp);
           this.log(`A mob of ${mob} ${ms.name.split(' ')[0]} gangs up on a big ${ts.name}`, ms.hue);
         }
+        // social meaning of the bite
+        this.feel(target, c, -0.5);
+        if (target.attackers && target._victim && c.rel.get(target._victim) > 0.3) {
+          c.defends++; c.act.guard += 1; this.social.defends++;
+          const v = this.byId.get(target._victim); if (v) this.feel(v, c, 0.4);
+          if (!this._defLog || this.tick - this._defLog > 1500) { this._defLog = this.tick; this.log(`A ${this.species.get(c.sp).name.split(' ')[0]} leapt in to defend a friend`, this.species.get(c.sp).hue); }
+        }
+        c._victim = target.id;
+        if (target.sp === c.sp && mob >= 3) {
+          target.bullied++; this.social.bullying++;
+          if (!this._bullyLog || this.tick - this._bullyLog > 2000) { this._bullyLog = this.tick; this.log(`Bullying: ${mob} ${this.species.get(c.sp).name} gang up on one of their own`, 300); }
+        }
+        c.act.hunt += target.sp === c.sp ? 0.3 : 1;
         const fortified = 1 - target.shelter * 0.3;
         const dmg = 1.4 * g.mouth * g.size * (0.06 + g.diet * 1.3) * R.attack * (1 - target.g.armor * 0.7) * pack * sizeF * strength * height * (0.6 + out[OUT.bite] * 0.4) * fortified;
         target.hp -= dmg * 3.5;
@@ -888,7 +936,8 @@ export class World {
     if (out[OUT.share] > 0.5 && needy && !needy.dead && c.energy > c.maxE * 0.35) {
       const amt = Math.min(1.2, c.energy * 0.02);
       c.energy -= amt; needy.energy = Math.min(needy.maxE, needy.energy + amt * 0.85);
-      c.shared += amt;
+      c.shared += amt; c.gifts++; c.act.care += 0.5; this.social.gifts++;
+      this.feel(needy, c, 0.3); this.feel(c, needy, 0.1);
     }
     c.signal = Math.max(0, out[OUT.signal]);
     c.v1 = out[OUT.voice1]; c.v2 = out[OUT.voice2];
@@ -907,6 +956,74 @@ export class World {
     if (c.energy <= 0 || c.age > c.life || c.hp <= 0) c.dead = true;
   }
 
+  // ---------- society ----------
+  feel(c, o, d) {
+    if (!o || o.dead || o === c) return;
+    const R = this.rules, rel = c.rel;
+    const v = clamp((rel.get(o.id) || 0) + d * R.socialMemory, -1, 1);
+    rel.set(o.id, v);
+    if (rel.size > 8) { let wk = null, wv = 9; for (const [k, x] of rel) if (Math.abs(x) < wv) { wv = Math.abs(x); wk = k; } rel.delete(wk); }
+  }
+  priceOf(c) { return Math.exp(c.priceOut * 1.4); }   // shells per food unit, 0.25 … 4
+  tryTrade(c, o) {
+    const M = this.market;
+    const needC = 1 - c.energy / c.maxE, needO = 1 - o.energy / o.maxE;
+    let buyer = null, seller = null;
+    if (needC > needO && o.stash >= 3) { buyer = c; seller = o; }
+    else if (needO > needC && c.stash >= 3) { buyer = o; seller = c; }
+    if (!buyer) return;
+    const ask = this.priceOf(seller), bid = this.priceOf(buyer) * (1 + buyer.g.risk * 0.6) * (0.6 + (1 - buyer.energy / buyer.maxE));
+    let kind, qty, price = 0;
+    if (buyer.wallet >= 0.25 && bid >= ask) {
+      price = (ask + bid) / 2;
+      qty = Math.min(seller.stash, 6, Math.floor(buyer.wallet / price));
+      if (qty < 1) return;
+      buyer.wallet -= qty * price; seller.wallet += qty * price; kind = 'shells';
+      M.sumP += price; M.nP++; M.trades++;
+    } else if (buyer.carry >= 1 && seller.carry < 1 && seller.g.habitat < 0.6) {
+      qty = Math.min(seller.stash, 5); buyer.carry = 0; seller.carry = 1; kind = 'barter'; M.barters++;
+    } else return;
+    seller.stash -= qty;
+    const food = qty * 6;
+    const room = buyer.maxE - buyer.energy, eat = Math.min(room, food);
+    buyer.energy += eat; buyer.stash += (food - eat) / 6;
+    buyer.tradesN++; seller.tradesN++; buyer.act.trade += 2; seller.act.trade += 2;
+    this.feel(buyer, seller, 0.08); this.feel(seller, buyer, 0.08);
+    M.volNow += qty;
+    M.feed.unshift({ t: this.tick, b: buyer.id, s: seller.id, bs: buyer.sp, ss: seller.sp, qty, price, kind });
+    if (M.feed.length > 40) M.feed.pop();
+    if (!this._firstTrade) { this._firstTrade = true; const sp = this.species.get(seller.sp); this.log(`First trade! A ${sp.name} sold food for ${kind === 'shells' ? 'shells — money is born' : 'building stone'}`, 50); }
+  }
+  marketTick() {
+    const M = this.market, cr = this.creatures;
+    const avg = M.nP ? M.sumP / M.nP : M.cur;
+    M.cur = M.cur * 0.7 + avg * 0.3;
+    // wealth: wallets plus stashes valued at today's food price
+    let money = 0; const wealth = [];
+    const bySp = new Map();
+    for (const c of cr) {
+      const w = c.wallet + c.stash * M.cur;
+      money += c.wallet; wealth.push(w);
+      bySp.set(c.sp, (bySp.get(c.sp) || 0) + w);
+    }
+    wealth.sort((a, b) => a - b);
+    let cum = 0, sum = 0; for (let i = 0; i < wealth.length; i++) { cum += (i + 1) * wealth[i]; sum += wealth[i]; }
+    const gini = sum > 0 ? (2 * cum) / (wealth.length * sum) - (wealth.length + 1) / wealth.length : 0;
+    M.prices.push({ t: this.tick, p: M.cur, vol: M.volNow, n: M.nP, money, gini });
+    if (M.prices.length > 400) M.prices.shift();
+    for (const [id, v] of bySp) { const h = M.index.get(id) || []; h.push(v); if (h.length > 120) h.shift(); M.index.set(id, h); }
+    for (const id of M.index.keys()) if (!bySp.has(id)) M.index.delete(id);
+    M.money = money; M.gini = gini; M.volNow = 0; M.sumP = 0; M.nP = 0;
+    // jobs: what each creature has mostly been doing lately
+    const roles = { farmer: 0, builder: 0, hunter: 0, trader: 0, caretaker: 0, guard: 0, idle: 0 };
+    for (const c of cr) {
+      const a = c.act; let best = 'idle', bv = 0.5;
+      for (const [k, r] of [['farm', 'farmer'], ['build', 'builder'], ['hunt', 'hunter'], ['trade', 'trader'], ['care', 'caretaker'], ['guard', 'guard']]) if (a[k] > bv) { bv = a[k]; best = r; }
+      c.role = best; roles[best]++;
+      for (const k in a) a[k] *= 0.6;
+    }
+    this.social.roles = roles;
+  }
   roomFor(g) {
     const R = this.rules, q = this._births ? this._births.length : 0;
     if (this.creatures.length + q >= 1580) return false;
@@ -922,7 +1039,13 @@ export class World {
     const budget = p.energy * 0.6;
     p.energy -= budget;
     let mateGive = 0;
-    if (mate) { mateGive = mate.energy * 0.25; mate.energy -= mateGive; mate.children++; }
+    if (mate) {
+      mateGive = mate.energy * 0.25; mate.energy -= mateGive; mate.children++;
+      const before = p.rel.get(mate.id) || 0;
+      this.feel(p, mate, 0.5); this.feel(mate, p, 0.5);
+      if (before > 0.8 && !p.bond) { p.bond = mate.id; mate.bond = p.id; this.social.bonds++;
+        if (!this._bondLog || this.tick - this._bondLog > 2500) { this._bondLog = this.tick; this.log(`Life partners: two ${this.species.get(p.sp).name} keep raising young together`, 330); } }
+    }
     const nursery = 1 + p.shelter * 0.3 * R.shelterBonus;
     const each = (budget + mateGive) * 0.85 * nursery / n;
     const sp = this.species.get(p.sp);
@@ -965,6 +1088,12 @@ export class World {
     const meat = 18 * c.g.size * c.g.size + Math.max(0, c.energy) * 0.4;
     const chunks = Math.max(1, Math.round(c.g.size));
     for (let i = 0; i < chunks; i++) this.addFood(c.x + randn() * 3, c.y + randn() * 3, 2, meat / chunks);
+    if (this.rules.inheritance && (c.wallet > 0.5 || c.stash > 0.5)) {
+      let heir = null;
+      for (const o of this.creatures) if (!o.dead && o.parent === c.id) { heir = o; break; }
+      if (!heir) for (const o of this.creatures) if (!o.dead && o.sp === c.sp && Math.abs(o.x - c.x) + Math.abs(o.y - c.y) < 80) { heir = o; break; }
+      if (heir) { heir.wallet += c.wallet; heir.stash += c.stash; }
+    }
     this.brain.release(c.slot);
     this.byId.delete(c.id);
     c.slot = -1;

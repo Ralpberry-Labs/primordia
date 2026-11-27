@@ -233,11 +233,54 @@ function updateEvents() {
   const ul = $('#events'), w = state.world;
   ul.innerHTML = w.events.map((e) => `<li style="--c:${hsl(e.hue, 0.7, 0.65)}"><span class="t">day ${Math.floor(e.t / w.rules.dayLength) + 1}</span>${e.msg}</li>`).join('');
 }
+// ---------- market ----------
+function spark(vals, w = 56, h = 16) {
+  if (vals.length < 2) return '';
+  const lo = Math.min(...vals), hi = Math.max(...vals) || 1, r = hi - lo || 1;
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * w},${h - ((v - lo) / r) * h}`).join(' ');
+  const up = vals[vals.length - 1] >= vals[0];
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="${up ? '#8fe3b8' : '#ff8a8a'}" stroke-width="1.5" points="${pts}"/></svg>`;
+}
+function updateMarket() {
+  const w = state.world, M = w.market, P = M.prices;
+  const cv = $('#priceChart');
+  if (cv.clientWidth) {
+    const [c, W, H] = sizeCanvas(cv); c.clearRect(0, 0, W, H);
+    if (P.length > 1) {
+      const maxV = Math.max(1, ...P.map((p) => p.vol));
+      P.forEach((p, i) => { const x = (i / (P.length - 1)) * W, bh = (p.vol / maxV) * H * 0.35; c.fillStyle = 'rgba(159,183,255,0.35)'; c.fillRect(x - 1, H - bh, 2, bh); });
+      const lo = Math.min(...P.map((p) => p.p)), hi = Math.max(...P.map((p) => p.p)), r = hi - lo || 1;
+      c.beginPath(); P.forEach((p, i) => { const x = (i / (P.length - 1)) * W, y = 8 + (1 - (p.p - lo) / r) * (H * 0.6); i ? c.lineTo(x, y) : c.moveTo(x, y); });
+      c.strokeStyle = '#ffc78a'; c.lineWidth = 2; c.stroke();
+      c.fillStyle = '#9fb3a9'; c.font = '11px JetBrains Mono, monospace'; c.fillText(`${hi.toFixed(2)}`, 4, 12); c.fillText(`${lo.toFixed(2)}`, 4, H * 0.6 + 8);
+    } else { c.fillStyle = '#9fb3a9'; c.font = '12px Space Grotesk'; c.fillText('No trades yet — money is waiting to be invented.', 8, 24); }
+  }
+  const last = P[P.length - 1] || { p: M.cur, money: 0, gini: 0 };
+  $('#mkPrice').textContent = `${M.cur.toFixed(2)} shells / food`;
+  const k = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
+  $('#mkKpis').innerHTML = k(fmt(M.money || 0), 'money supply') + k(M.trades, 'cash trades') + k(M.barters, 'barters') + k((M.gini || 0).toFixed(2), 'inequality (Gini)');
+  const idx = [...M.index.entries()].map(([id, h]) => ({ sp: w.species.get(id), h })).filter((x) => x.sp && x.sp.count > 0).sort((a, b) => b.h[b.h.length - 1] - a.h[a.h.length - 1]).slice(0, 8);
+  $('#mkIndex').innerHTML = idx.map(({ sp, h }) => {
+    const now = h[h.length - 1], then = h[Math.max(0, h.length - 20)] || now, ch = then ? ((now - then) / then) * 100 : 0;
+    return `<li><span class="nm" style="color:${hsl(sp.hue, 0.6, 0.72)}">${sp.name}</span><span class="v">${fmt(now)}</span><span class="v ${ch >= 0 ? 'up' : 'down'}">${ch >= 0 ? '▲' : '▼'}${Math.abs(ch).toFixed(1)}%</span>${spark(h.slice(-40))}</li>`;
+  }).join('') || '<li class="muted">No wealth yet.</li>';
+  $('#mkCount').textContent = `${M.trades + M.barters} total`;
+  const nm = (sp) => { const s2 = w.species.get(sp); return s2 ? s2.name.split(' ')[0] : '?'; };
+  $('#mkFeed').innerHTML = M.feed.slice(0, 14).map((f) => `<li data-id="${f.b}"><span class="t">day ${Math.floor(f.t / w.rules.dayLength) + 1}</span><span>#${f.s} <i>${nm(f.ss)}</i> sold ${(+f.qty).toFixed(1)} food to #${f.b} <i>${nm(f.bs)}</i> ${f.kind === 'shells' ? `for <b>${(f.qty * f.price).toFixed(1)}</b> shells (${f.price.toFixed(2)} each)` : 'for a block of stone (barter)'}</span></li>`).join('') || '<li class="muted">Waiting for the first deal…</li>';
+  const rich = [...w.creatures].sort((a, b) => (b.wallet + b.stash * M.cur) - (a.wallet + a.stash * M.cur)).slice(0, 6);
+  $('#mkRich').innerHTML = rich.map((c) => `<li data-id="${c.id}"><span class="t">#${c.id}</span><span><i>${w.species.get(c.sp).name}</i> · ${c.wallet.toFixed(1)} shells · ${c.stash.toFixed(1)} food · ${c.role} · risk ${(c.g.risk * 100).toFixed(0)}%</span></li>`).join('');
+  for (const ul of ['#mkFeed', '#mkRich']) $(ul).querySelectorAll('li[data-id]').forEach((li) => li.onclick = () => { const c = w.byId.get(+li.dataset.id); if (c) { selectCreature(c); state.follow = true; setFollowBtn(); } });
+  const R2 = w.social.roles || {}, tot = Object.values(R2).reduce((a, b) => a + b, 0) || 1;
+  $('#mkRoles').innerHTML = Object.entries(R2).sort((a, b) => b[1] - a[1]).map(([r, n]) => `<div class="role"><span>${r}</span><div class="track"><i style="width:${(n / tot) * 100}%"></i></div><span class="muted">${n}</span></div>`).join('');
+  const S2 = w.social;
+  $('#mkSocial').innerHTML = k(fmt(S2.gifts), 'gifts of food') + k(fmt(S2.defends), 'friends defended') + k(fmt(S2.bullying), 'bullying bites') + k(S2.bonds, 'life partners');
+}
 function updatePanels() {
   const tab = $('.tab.active').dataset.tab;
   if (document.body.classList.contains('panel-hidden')) return;
   if (tab === 'life') { drawPopChart(); drawTraitChart(); drawPhylo(); updateSpeciesList(); }
   if (tab === 'story') updateEvents();
+  if (tab === 'market') updateMarket();
 }
 
 // ---------- inspector ----------
@@ -274,7 +317,7 @@ function updateInspector() {
   const sp = w.species.get(c.sp);
   $('#ciName').textContent = sp.name;
   const par = w.byId.get(c.parent), kids = w.creatures.filter((k) => k.parent === c.id).length;
-  $('#ciSub').textContent = `#${c.id} · gen ${c.gen} · ${kids}/${c.children} children alive · parent ${par ? 'alive' : c.parent ? 'gone' : 'founder'} · ${c.killsN} kills · ${c.builtN} walls built${c.raidN ? ` · ${c.raidN} raided` : ''}${c.sick > 0 ? ' · sick' : c.immune ? ' · immune' : ''}`;
+  $('#ciSub').textContent = `#${c.id} · gen ${c.gen} · ${kids}/${c.children} children alive · parent ${par ? 'alive' : c.parent ? 'gone' : 'founder'} · ${c.killsN} kills · ${c.builtN} walls built · ${c.role}${c.bond ? ' · has a life partner' : ''}${c.tradesN ? ` · ${c.tradesN} trades` : ''}${c.raidN ? ` · ${c.raidN} raided` : ''}${c.sick > 0 ? ' · sick' : c.immune ? ' · immune' : ''}`;
   const bar = (k, v, max, col, txt) => `<div class="barrow"><span>${k}</span><div class="track"><div class="fill" style="width:${clamp(v / max, 0, 1) * 100}%;background:${col}"></div></div><span class="v">${txt}</span></div>`;
   $('#ciBars').innerHTML =
     bar('Energy', c.energy, c.maxE, '#ffc78a', `${c.energy.toFixed(0)}/${c.maxE.toFixed(0)}`) +
@@ -290,6 +333,9 @@ function updateInspector() {
     bar('Voice', Math.max(Math.abs(c.v1), Math.abs(c.v2)), 1, '#ffb070', `${c.v1.toFixed(2)} / ${c.v2.toFixed(2)}`) +
     bar('Height', c.z, 4, '#c9b8a0', `level ${c.z}`) +
     bar('Body temp', clamp((c.temp + 10) / 50, 0, 1), 1, c.temp > 27 - 30 * c.g.fur + 7 ? '#ff8a6a' : c.temp < 27 - 30 * c.g.fur - 7 ? '#7fb8ff' : '#8fe3b8', `${c.temp.toFixed(0)}°C (likes ${(27 - 30 * c.g.fur).toFixed(0)})`) +
+    bar('Wallet', Math.min(1, c.wallet / 20), 1, '#ffd36b', `${c.wallet.toFixed(1)} shells`) +
+    bar('Food stash', Math.min(1, c.stash / (4 + 6 * c.g.size)), 1, '#b6dc8c', `${c.stash.toFixed(1)} units`) +
+    bar('Friends', [...c.rel.values()].filter((v) => v > 0.3).length, 8, '#8fe3b8', `${[...c.rel.values()].filter((v) => v > 0.3).length} friends · ${[...c.rel.values()].filter((v) => v < -0.3).length} foes`) +
     bar('Genes mixed', heterozygosity(c.g), 1, '#a0e0d0', Math.round(heterozygosity(c.g) * 100) + '% heterozygous');
   $('#ciBrain').textContent = `${c.brain.neurons} neurons · ${c.brain.synapses} synapses · IQ ${c.brain.iq} · ${state.brain.kind.split(' ')[0]}`;
   drawBrain(c);

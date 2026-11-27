@@ -182,3 +182,18 @@ input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 
 .dna .strand i { flex: 1; height: 9px; border-radius: 1px; }
 @media (max-width: 820px) { #btnLayer { display: none; } }
 @media (max-width: 1280px) { .tb-btn .lbl { display: none; } }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 6px; margin-top: 8px; }
+.kpi { background: rgba(255,255,255,0.04); border-radius: 8px; padding: 6px 8px; }
+.kpi b { display: block; font-family: var(--mono); font-size: 14px; }
+.kpi span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.tickers, .feed { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.tickers li { display: grid; grid-template-columns: 1fr 70px 56px 60px; gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.tickers .nm { font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tickers .v { font-family: var(--mono); text-align: right; }
+.up { color: #8fe3b8; } .down { color: #ff8a8a; }
+.feed li { padding: 4px 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+.feed .t { font-family: var(--mono); color: var(--muted); font-size: 10.5px; min-width: 44px; }
+.role { display: grid; grid-template-columns: 80px 1fr 36px; gap: 8px; align-items: center; font-size: 12px; margin-bottom: 4px; }
+.role .track { height: 6px; background: rgba(255,255,255,0.07); border-radius: 4px; overflow: hidden; }
+.role .track i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); }

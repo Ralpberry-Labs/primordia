@@ -1,9 +1,9 @@
 // Primordia brain core: compiled to WebAssembly (see cpp/build.sh).
 //
 // Every creature owns a "slot" holding its own copy of its neural network:
-//   * 58 inputs (eyes, body senses, voices heard, and 4 memory cells fed back in)
+//   * 62 inputs (eyes, body senses, voices heard, and 4 memory cells fed back in)
 //   * up to 32 hidden neurons with recurrent (hidden->hidden) wiring = short-term memory
-//   * 16 outputs: actions, two voice channels, gated writes into 4 long-term memory
+//   * 18 outputs: actions, two voice channels, gated writes into 4 long-term memory
 //     cells, and a "value" neuron: the brain's own guess of how well things are going.
 //
 // Learning during life follows the three-factor rule of neuroscience:
@@ -19,15 +19,15 @@
 // Freestanding C++: no libc, no exceptions, just math on static arrays.
 
 #define MAX_SLOTS 1600
-#define N_IN 58
+#define N_IN 62
 #define H_MAX 32
-#define N_OUT 16
+#define N_OUT 18
 #define N_MEM 4
 #define MEM_IN (N_IN - N_MEM)     // first memory input index
-#define OUT_MEMV 9                // outputs 9..12 = memory values
-#define OUT_GATE_A 13             // gate for memories 0,1
-#define OUT_GATE_B 14             // gate for memories 2,3
-#define OUT_VALUE 15              // critic: predicted future reward
+#define OUT_MEMV 11               // outputs 9..12 = memory values
+#define OUT_GATE_A 15             // gate for memories 0,1
+#define OUT_GATE_B 16             // gate for memories 2,3
+#define OUT_VALUE 17              // critic: predicted future reward
 
 #define O_IH 0
 #define O_HH (O_IH + N_IN * H_MAX)

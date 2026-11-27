@@ -34,6 +34,15 @@ Brains are written in **C++ and compiled to WebAssembly**. Everything else is pl
 - **Physics:** bodies have mass, muscle thrust and quadratic drag (water is much denser than air; fish are streamlined and flop on land), and they push each other apart weighted by mass. Falling from a height hurts.
 - **Seeds:** animals that eat fruit and plants carry seeds in the gut and drop them elsewhere, so gardens and new trees spring up along their paths.
 
+## Society and economy
+
+- **Relationships:** each creature remembers up to 8 others, with affinity running from love to hate. Gifts, trades and mating raise it; bites lower it. Brains sense whether the one in front is a friend or foe, and whether a friend nearby is in pain.
+- **Detected and logged:** defending a friend, bullying (a same-species mob on one victim), and life-long partners.
+- **Stashes:** food eaten beyond fullness is stored, and eaten later or traded.
+- **Money:** shells found on beaches serve as money, and every creature has a wallet and a risk-appetite gene.
+- **Trading:** two brain outputs, *trade* and *price*, set whether a creature is open to a deal and its asking or bid price. A hungry buyer with shells buys stashed food from a better-fed seller when the bid meets the ask. Without money, they barter stone for food. Wealth passes to children or kin at death.
+- **Market tab:** a food price chart with volume, money supply, wealth inequality (the Gini coefficient), a stock-style wealth index per species, a live trade feed, the richest creatures, and jobs (farmer, builder, hunter, trader, caretaker, guard) worked out from what each creature actually does.
+
 ## Civilisation and conflict
 
 - **3D building:** creatures pick up stone, sand and wood as they move, and their brain decides when to place a wall, or to stack a block on top of a wall in front of them, up to 4–6 levels. Creatures climb one level at a time, so reaching the top needs stairs. Height pays off: the richest fruit hangs in tree canopies and can only be reached from a tower, creatures up high see farther, and attackers have trouble reaching them. Fences one block high can be climbed by anyone, but walls two or more blocks high keep other species out. Blocks go where kin walls already are (termite-style stigmergy), so walls grow into lines, rooms and compounds rather than scattered bricks. Walls next to kin walls are stronger, lone walls crumble, and walls need repairs.

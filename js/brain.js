@@ -12,7 +12,7 @@ export async function createBrain(wasmBytes) {
   try {
     let bytes = wasmBytes;
     if (!bytes) {
-      const res = await fetch(new URL('../wasm/brain.wasm?v=4', import.meta.url));
+      const res = await fetch(new URL('../wasm/brain.wasm?v=5', import.meta.url));
       if (!res.ok) throw new Error('no wasm');
       bytes = await res.arrayBuffer();
     }
