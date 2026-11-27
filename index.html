@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Primordia — an evolving pixel ecosystem</title>
+  <meta name="description" content="A living pixel-art world where tiny creatures with neural-network brains feed, hunt, breed, mutate and evolve into new species. Change the rules and watch emergence happen.">
+  <meta name="theme-color" content="#0d1d2b">
+  <meta property="og:title" content="Primordia — an evolving pixel ecosystem">
+  <meta property="og:description" content="Tiny creatures with evolving bodies, eyes and brains. Watch new species emerge, packs form and predators rise.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <canvas id="world" aria-label="Simulation world"></canvas>
+    <div class="vignette"></div>
+
+    <header class="hud">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <div>
+          <h1>Primordia</h1>
+          <p class="sub">an evolving pixel ecosystem</p>
+        </div>
+      </div>
+      <div class="chips" id="chips"></div>
+    </header>
+
+    <div class="toast" id="toast"></div>
+
+    <nav class="toolbar" id="toolbar">
+      <div class="tb-group">
+        <button id="btnPlay" class="tb-btn primary" title="Play / pause (space)"><span class="ico">❚❚</span></button>
+        <button id="btnSpeed" class="tb-btn" title="Simulation speed">1×</button>
+      </div>
+      <div class="tb-group tools" id="tools">
+        <button class="tb-btn tool active" data-tool="inspect" title="Inspect creatures"><span class="ico">◎</span><span class="lbl">Inspect</span></button>
+        <button class="tb-btn tool" data-tool="food" title="Drop fruit"><span class="ico">✿</span><span class="lbl">Food</span></button>
+        <button class="tb-btn tool" data-tool="tree" title="Plant a tree"><span class="ico">♣</span><span class="lbl">Tree</span></button>
+        <button class="tb-btn tool" data-tool="spawn" title="Seed a new species"><span class="ico">✦</span><span class="lbl">Life</span></button>
+        <button class="tb-btn tool" data-tool="meteor" title="Meteor strike"><span class="ico">☄</span><span class="lbl">Meteor</span></button>
+      </div>
+      <div class="tb-group">
+        <button id="btnPanel" class="tb-btn" title="Show / hide panel"><span class="ico">☰</span></button>
+      </div>
+    </nav>
+
+    <aside class="panel" id="panel">
+      <div class="handle" id="handle"><span></span></div>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="life">Life</button>
+        <button class="tab" data-tab="creature">Creature</button>
+        <button class="tab" data-tab="rules">Rules</button>
+        <button class="tab" data-tab="story">Story</button>
+        <button class="tab" data-tab="about">About</button>
+      </div>
+      <div class="panes">
+        <section class="pane active" data-pane="life">
+          <div class="card">
+            <div class="card-h"><h3>Population</h3><span class="legend" id="popLegend"></span></div>
+            <canvas class="chart" id="popChart" height="140"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-h">
+              <h3>Evolution of</h3>
+              <select id="traitSel">
+                <option value="iq">Intelligence (IQ)</option>
+                <option value="hidden">Neurons</option>
+                <option value="eyes">Eyes</option>
+                <option value="vision">Vision range</option>
+                <option value="fov">Field of view</option>
+                <option value="diet">Diet (meat)</option>
+                <option value="size">Body size</option>
+                <option value="speed">Speed</option>
+                <option value="armor">Armor</option>
+                <option value="mutRate">Mutation rate</option>
+                <option value="plastic">Learning</option>
+              </select>
+            </div>
+            <canvas class="chart" id="traitChart" height="110"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Tree of life</h3><span class="muted" id="treeInfo"></span></div>
+            <canvas class="chart" id="phyloChart" height="160"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Living species</h3><span class="muted" id="spCount"></span></div>
+            <ul class="species" id="speciesList"></ul>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="creature">
+          <div id="inspectEmpty" class="empty">
+            <p>Tap any creature to read its genome and watch its brain think.</p>
+            <div class="row">
+              <button class="btn" id="pickSmart">Smartest</button>
+              <button class="btn" id="pickOld">Oldest lineage</button>
+              <button class="btn" id="pickHunter">Top hunter</button>
+            </div>
+          </div>
+          <div id="inspect" hidden>
+            <div class="who">
+              <canvas id="portrait" width="96" height="96"></canvas>
+              <div>
+                <h2 id="ciName">—</h2>
+                <p class="muted" id="ciSub"></p>
+                <div class="row">
+                  <button class="btn sm" id="ciFollow">Follow</button>
+                  <button class="btn sm" id="ciClone">Clone ×6</button>
+                  <button class="btn sm ghost" id="ciClose">Close</button>
+                </div>
+              </div>
+            </div>
+            <div class="bars" id="ciBars"></div>
+            <div class="card">
+              <div class="card-h"><h3>Brain</h3><span class="muted" id="ciBrain"></span></div>
+              <canvas id="brainCanvas" class="chart" height="230"></canvas>
+            </div>
+            <div class="card">
+              <div class="card-h"><h3>Genome</h3></div>
+              <div class="genes" id="ciGenes"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="rules">
+          <div id="rulesBox"></div>
+          <div class="card">
+            <div class="card-h"><h3>Acts of nature</h3></div>
+            <div class="row wrap">
+              <button class="btn" id="evBloom">🌸 Bloom</button>
+              <button class="btn" id="evPlague">☣ Plague</button>
+              <button class="btn" id="evMeteor">☄ Random meteor</button>
+              <button class="btn" id="evFounders">✦ New founders</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>World</h3></div>
+            <label class="field">Seed <input id="seedIn" type="number" inputmode="numeric"></label>
+            <label class="field">Founding species <input id="foundIn" type="range" min="2" max="12" value="6"><output id="foundOut">6</output></label>
+            <label class="field">World size
+              <select id="sizeSel"><option value="s">Small</option><option value="m" selected>Medium</option><option value="l">Large</option></select>
+            </label>
+            <div class="row wrap">
+              <button class="btn primary" id="newWorld">New world</button>
+              <button class="btn" id="randSeed">Random seed</button>
+              <button class="btn ghost" id="resetRules">Reset rules</button>
+            </div>
+            <div class="row wrap">
+              <button class="btn" id="saveBtn">Save</button>
+              <button class="btn" id="loadBtn">Load</button>
+              <button class="btn" id="exportBtn">Export genomes</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="story">
+          <div class="card">
+            <div class="card-h"><h3>Chronicle</h3></div>
+            <ul class="events" id="events"></ul>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="about">
+          <div class="card prose">
+            <h3>What you are looking at</h3>
+            <p>Every creature carries a <b>genome</b>: body pixels, colours, size, muscle, armour, diet, the number of eyes, their field of view and range, mouth size, litter size, lifespan, and even its own <b>mutation rate</b> and <b>learning rate</b>. The genome also holds a small <b>recurrent neural network</b> — its brain.</p>
+            <p>Each eye watches a slice of the world and reports four things: plants, prey or meat, threats, and kin. The brain also feels hunger, health, age, pain, a heartbeat clock, crowding, and the glow signals of others. It decides how to move and turn, when to bite, when to glow, when to share food, and when to breed.</p>
+            <p>No behaviour is programmed. Creatures that find food survive long enough to breed; their children inherit a <b>mutated</b> (and, with sexual reproduction, <b>recombined</b>) copy of the genome. Brains can grow new neurons, wire or prune synapses. When a lineage drifts far enough from its ancestors it becomes a <b>new species</b>, keeping its genus name.</p>
+            <p>Watch for emergence: herds forming, packs of predators hunting together (bites from kin stack), creatures sharing food with starving relatives, night-time glow languages, arms races between armour and jaws, and brains getting bigger when you lower the brain cost.</p>
+            <h3>Controls</h3>
+            <p>Drag to pan, scroll or pinch to zoom. Space pauses. Use the tools to drop food, plant trees, seed new life, or call down a meteor. Everything in <b>Rules</b> changes live.</p>
+            <p class="muted">Inspired by artificial-life work like Polyworld, The Bibites and NEAT neuroevolution. Pure HTML, CSS and JavaScript — no libraries.</p>
+            <p><a href="https://github.com/Ralpberry-Labs/primordia" target="_blank" rel="noopener">Source on GitHub</a> · a Ralpberry Labs toy</p>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

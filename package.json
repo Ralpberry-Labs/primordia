@@ -1,0 +1,9 @@
+{
+  "name": "primordia",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sim": "node tools/headless.mjs",
+    "serve": "python3 -m http.server 8765"
+  }
+}
