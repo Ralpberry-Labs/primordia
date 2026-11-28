@@ -1,8 +1,8 @@
 // Pixel-art renderer: terrain, plants, trees, creatures, light.
-import { TAU, clamp, hslToRgb, rgb, hsl, makeNoise } from './util.js';
-import { bodyMask } from './genome.js';
-import { TERRAIN_RES, BS } from './world.js';
-import { WC } from './climate.js';
+import { TAU, clamp, hslToRgb, rgb, hsl, makeNoise } from './util.js?v=6f9903a0547';
+import { bodyMask } from './genome.js?v=6f9903a0547';
+import { TERRAIN_RES, BS } from './world.js?v=6f9903a0547';
+import { WC } from './climate.js?v=6f9903a0547';
 
 const SP = 2; // sprite sub-pixels per body pixel
 
@@ -206,7 +206,20 @@ function bakeTerrain(world) {
   return cv;
 }
 
-export const LZ = 6;   // screen units per stacked level (oblique 2.5D projection)
+export const LZ = 6;
+// pre-rendered soft glow (gradients per creature per frame are expensive)
+const glowCache = new Map();
+function glowSprite(hue) {
+  const key = Math.round(hue / 20) * 20;
+  let cv = glowCache.get(key);
+  if (!cv) {
+    cv = document.createElement('canvas'); cv.width = cv.height = 64;
+    const g = cv.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, hsl(key, 0.9, 0.65, 1)); gr.addColorStop(1, hsl(key, 0.9, 0.5, 0));
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64); glowCache.set(key, cv);
+  }
+  return cv;
+}   // screen units per stacked level (oblique 2.5D projection)
 
 export class Renderer {
   constructor(canvas, world) {
@@ -306,6 +319,7 @@ export class Renderer {
     ctx.fillStyle = '#0d1d2b';
     ctx.fillRect(0, 0, this.cv.width, this.cv.height);
     const z = c.zoom * dpr;
+    this._m = { a: z, b: 0, c: 0, d: z, e: (this.vw / 2 - c.x * c.zoom) * dpr, f: (this.vh / 2 - c.y * c.zoom) * dpr };
     const worldT = () => ctx.setTransform(z, 0, 0, z, (this.vw / 2 - c.x * c.zoom) * dpr, (this.vh / 2 - c.y * c.zoom) * dpr);
     worldT();
     ctx.imageSmoothingEnabled = false;
@@ -327,9 +341,27 @@ export class Renderer {
         if (w.isWater(x, y) && inView(x, y)) ctx.fillRect(x, y, 6, 1.2);
       }
     }
-    // ground-level food
+    // ground-level food (zoomed out: a cached layer refreshed every few frames)
+    const overview = c.zoom < 1.4;
     const ps = this.plantSprites;
-    for (const f of w.food) {
+    if (overview) {
+      if (!this.foodCv || this.foodCv.width !== w.W) { this.foodCv = document.createElement('canvas'); this.foodCv.width = w.W; this.foodCv.height = w.H; this.foodStrip = 0; }
+      {
+        // refresh one horizontal strip per frame (whole layer every 6 frames) — no big spikes
+        const NS = 6, sh = Math.ceil(w.H / NS), k = this.foodStrip = (this.foodStrip + 1) % NS, y0 = k * sh, y1 = y0 + sh;
+        const fc = this.foodCv.getContext('2d'); fc.clearRect(0, y0, w.W, sh); fc.imageSmoothingEnabled = false;
+        fc.save(); fc.beginPath(); fc.rect(0, y0, w.W, sh); fc.clip();
+        for (const f of w.food) {
+          if (f.z > 0 || f.y < y0 - 8 || f.y > y1 + 8) continue;
+          if (f.type === 0) { const s2 = 3.5 + Math.sqrt(f.e) * 1.3; fc.drawImage(f.aqua ? this.algaeSprite : ps[f.v & 3], f.x - s2 / 2, f.y - s2 / 2, s2, s2); }
+          else if (f.type === 1) fc.drawImage(this.fruit(f.hue), f.x - 4, f.y - 4, 8, 8);
+          else { const s2 = 3 + Math.sqrt(f.e) * 0.5; fc.drawImage(this.meatSprite, f.x - s2 / 2, f.y - s2 / 2, s2, s2); }
+        }
+        fc.restore();
+      }
+      ctx.drawImage(this.foodCv, 0, 0);
+    }
+    if (!overview) for (const f of w.food) {
       if (f.z > 0 || !inView(f.x, f.y)) continue;
       if (f.type === 0) {
         const s = 3.5 + Math.sqrt(f.e) * 1.3;
@@ -383,9 +415,24 @@ export class Renderer {
     for (const cr of w.creatures) if (inView(cr.x, cr.y)) put(cr.y, cr);
     for (const f of w.food) if (f.z > 0 && inView(f.x, f.y)) put(f.y + 1, f);
     const bx0 = Math.max(0, (vx0 / BS) | 0), bx1 = Math.min(w.bw - 1, (vx1 / BS) | 0);
+    if (overview && w.blockCount) {
+      // zoomed out: walls come from a cached layer, rebuilt when structures change (at most every 30 frames)
+      // zoomed out: flat wall tiles (brighter = taller) in a cache, updated cell by cell as walls change
+      if (!this.wallCv || this.wallCv.width !== w.W || this.wallWorld !== w) { this.wallCv = document.createElement('canvas'); this.wallCv.width = w.W; this.wallCv.height = w.H; this.wallWorld = w; w.wallsAllDirty = true; }
+      const wc = this.wallCv.getContext('2d');
+      if (w.wallsAllDirty) {
+        w.wallsAllDirty = false; w.dirtyCells.length = 0;
+        wc.clearRect(0, 0, w.W, w.H);
+        for (let b = 0; b < w.bOwner.length; b++) if (w.bOwner[b]) this.flatTile(wc, b);
+      } else if (w.dirtyCells.length) {
+        for (const b of w.dirtyCells) { wc.clearRect((b % w.bw) * BS, ((b / w.bw) | 0) * BS, BS, BS); if (w.bOwner[b]) this.flatTile(wc, b); }
+        w.dirtyCells.length = 0;
+      }
+      ctx.drawImage(this.wallCv, 0, 0);
+    }
     for (let r = 0; r < rows; r++) {
       const by = by0 + r;
-      if (w.blockCount) this.drawWallRow(ctx, by, bx0, bx1);
+      if (w.blockCount && !overview) this.drawWallRow(ctx, by, bx0, bx1);
       for (const o of buckets[r]) {
         if (o.maxR !== undefined) this.drawTree(ctx, o);
         else if (o.g) this.drawCreature(ctx, o, frame, c.zoom);
@@ -441,21 +488,18 @@ export class Renderer {
       if (cr.signal < 0.08 || !inView(cr.x, cr.y)) continue;
       const a = cr.signal * (0.12 + dark * 0.5);
       const R = cr.radius * (2 + cr.signal * 2), sy = cr.y - cr.z * LZ;
-      const gr = ctx.createRadialGradient(cr.x, sy, 0, cr.x, sy, R);
-      gr.addColorStop(0, hsl(cr.g.hue2, 0.9, 0.65, a));
-      gr.addColorStop(1, hsl(cr.g.hue2, 0.9, 0.5, 0));
-      ctx.fillStyle = gr;
-      ctx.fillRect(cr.x - R, sy - R, R * 2, R * 2);
+      ctx.globalAlpha = Math.min(1, a);
+      ctx.drawImage(glowSprite(cr.g.hue2), cr.x - R, sy - R, R * 2, R * 2);
     }
     if (cl.burning) {
       for (let y = Math.max(0, (vy0 / WC) | 0); y <= Math.min(cl.ch - 1, (vy1 / WC) | 0); y++) for (let x = Math.max(0, (vx0 / WC) | 0); x <= Math.min(cl.cw - 1, (vx1 / WC) | 0); x++) {
         const f = cl.fire[y * cl.cw + x]; if (f <= 0) continue;
         const X = (x + 0.5) * WC, Y = (y + 0.5) * WC, R = WC * (1 + f);
-        const gr = ctx.createRadialGradient(X, Y, 0, X, Y, R);
-        gr.addColorStop(0, `rgba(255,140,40,${0.25 * f + dark * 0.3})`); gr.addColorStop(1, 'rgba(255,80,20,0)');
-        ctx.fillStyle = gr; ctx.fillRect(X - R, Y - R, R * 2, R * 2);
+        ctx.globalAlpha = Math.min(1, 0.25 * f + dark * 0.3);
+        ctx.drawImage(glowSprite(25), X - R, Y - R, R * 2, R * 2);
       }
     }
+    ctx.globalAlpha = 1;
     if (dark > 0.3) {
       for (const t of w.trees) {
         if (!inView(t.x, t.y)) continue;
@@ -520,22 +564,23 @@ export class Renderer {
     const fr = moving ? ((frame / 8 + cr.id) | 0) % 2 : 0;
     const sy = cr.y - cr.z * LZ;
     const fish = cr.g.habitat > 0.6, swim = cr.inWater;
-    ctx.fillStyle = swim ? 'rgba(10,30,60,0.25)' : 'rgba(0,0,0,0.2)';
-    ctx.beginPath(); ctx.ellipse(cr.x + 1.5, sy + 2.5, cr.radius * 0.9, cr.radius * 0.6, 0, 0, TAU); ctx.fill();
+    if (zoom > 1.2) {
+      ctx.fillStyle = swim ? 'rgba(10,30,60,0.25)' : 'rgba(0,0,0,0.2)';
+      ctx.beginPath(); ctx.ellipse(cr.x + 1.5, sy + 2.5, cr.radius * 0.9, cr.radius * 0.6, 0, 0, TAU); ctx.fill();
+    }
     if (swim && zoom > 1) {
       ctx.strokeStyle = 'rgba(220,245,255,0.35)'; ctx.lineWidth = 0.6;
       const rr2 = cr.radius * (1.1 + ((frame + cr.id * 7) % 40) / 40);
       ctx.beginPath(); ctx.ellipse(cr.x, cr.y, rr2, rr2 * 0.6, 0, 0, TAU); ctx.stroke();
     }
-    ctx.save();
-    ctx.translate(cr.x, sy); ctx.rotate(cr.a);
     const grow = Math.min(1, 0.55 + cr.age / 500);
-    ctx.scale(grow, grow);
+    const ca = Math.cos(cr.a) * grow, sa = Math.sin(cr.a) * grow, M = this._m;
+    ctx.setTransform(M.a * ca + M.c * sa, M.b * ca + M.d * sa, M.a * -sa + M.c * ca, M.b * -sa + M.d * ca, M.a * cr.x + M.c * sy + M.e, M.b * cr.x + M.d * sy + M.f);
     if (swim) ctx.globalAlpha = fish ? 0.85 : 0.75;
     if (cr.pain > 0.5) ctx.globalAlpha = 0.6 + 0.4 * Math.sin(frame);
     ctx.drawImage(sp.frames[fr], -S / 2, -S / 2, S, S);
     if (cr.carry >= 1 && zoom > 1.2) { ctx.fillStyle = '#b08a5a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 2.4); ctx.fillStyle = '#e0c49a'; ctx.fillRect(-S * 0.32, -1.2, 2.4, 0.8); }
-    ctx.restore();
+    ctx.setTransform(M.a, M.b, M.c, M.d, M.e, M.f);
     ctx.globalAlpha = 1;
     if (cr.sick > 0 && zoom > 0.8) { ctx.fillStyle = 'rgba(170,220,60,0.28)'; ctx.beginPath(); ctx.arc(cr.x, sy, cr.radius * 1.1, 0, TAU); ctx.fill(); }
     // voices: little sound arcs (warm = voice 1, cool = voice 2)
@@ -566,6 +611,13 @@ export class Renderer {
       const sx = X + 16 + Math.sin(frame * 0.05 + x) * 6, sy2 = Y - 10 - ((frame * 0.4 + y * 10) % 30);
       ctx.beginPath(); ctx.arc(sx, sy2, 8 + f * 6, 0, TAU); ctx.fill();
     }
+  }
+  flatTile(wc, b) {
+    const w = this.world, o = w.bOwner[b], h = w.bH[b], sp = w.species.get(o);
+    const X = (b % w.bw) * BS, Y = ((b / w.bw) | 0) * BS;
+    wc.fillStyle = o < 0 ? 'rgba(120,112,100,0.7)' : hsl(sp ? sp.hue : 0, 0.28, 0.34 + h * 0.07);
+    wc.fillRect(X, Y, BS, BS);
+    wc.fillStyle = 'rgba(0,0,0,0.25)'; wc.fillRect(X, Y + BS - 1, BS, 1);
   }
   // One row of stacked wall columns in oblique projection: front faces, then tops.
   drawWallRow(ctx, by, bx0, bx1) {

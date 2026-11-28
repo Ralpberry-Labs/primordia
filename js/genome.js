@@ -1,5 +1,5 @@
 // Genome: every heritable trait of a creature, plus its neural network weights.
-import { rand, rr, ri, randn, chance, clamp } from './util.js';
+import { rand, rr, ri, randn, chance, clamp } from './util.js?v=6f9903a0547';
 
 export const MAX_EYES = 6;
 export const CH = 5;                    // per-eye channels: plant, prey/meat, threat, kin, structure

@@ -1,9 +1,9 @@
 // Wires the world, renderer and UI together.
-import { World, RULES, defaultRules } from './world.js';
-import { Renderer, drawPortrait } from './render.js';
-import { GENES, INT_GENES, N_IN, N_OUT, H_MAX, MAX_EYES, CH, CH_NAMES, O_IH, O_HO, OUT_NAMES, SENSE_NAMES, OUT, TRAITS, LOCI, serializeGenome, deserializeGenome, heterozygosity } from './genome.js';
-import { createBrain } from './brain.js';
-import { setSeed, hsl, clamp } from './util.js';
+import { World, RULES, defaultRules } from './world.js?v=6f9903a0547';
+import { Renderer, drawPortrait } from './render.js?v=6f9903a0547';
+import { GENES, INT_GENES, N_IN, N_OUT, H_MAX, MAX_EYES, CH, CH_NAMES, O_IH, O_HO, OUT_NAMES, SENSE_NAMES, OUT, TRAITS, LOCI, serializeGenome, deserializeGenome, heterozygosity } from './genome.js?v=6f9903a0547';
+import { createBrain } from './brain.js?v=6f9903a0547';
+import { setSeed, hsl, clamp } from './util.js?v=6f9903a0547';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -48,10 +48,20 @@ function loop(now) {
     acc += SPEEDS[state.speedIdx] * dt / 16.67;
     const t0 = performance.now();
     let n = 0;
+    // give the simulation at most ~9 ms per frame so drawing stays smooth;
+    // if it can't keep up, the world simply runs a little slower than asked
     while (acc >= 1) {
       w.step(); acc -= 1; n++;
-      if (performance.now() - t0 > 22) { acc = 0; break; } // keep frames smooth on slow devices
+      if (performance.now() - t0 > 9) { acc = 0; break; }
     }
+    state.stepsDone = (state.stepsDone || 0) + n;
+  }
+  if (now - (state.speedT || 0) > 1000) {
+    const real = (state.stepsDone || 0) / ((now - (state.speedT || now - 1000)) / 1000) / 60;
+    state.realSpeed = real; state.stepsDone = 0; state.speedT = now;
+    const want = SPEEDS[state.speedIdx];
+    $('#btnSpeed').title = `Simulation speed — asked ${want}×, actually running ${real.toFixed(1)}×`;
+    $('#btnSpeed').classList.toggle('lag', state.running && real < want * 0.8);
   }
   const sel = state.selected;
   if (sel && sel.dead) {
@@ -375,22 +385,21 @@ function drawBrain(cr) {
   const colX = [62, W / 2 - 6, W - 58];
   const ys = (n, i) => 8 + (n === 1 ? (H - 16) / 2 : (i * (H - 16)) / (n - 1));
   const chCol = ['#8fe3b8', '#ff8a8a', '#ffb36b', '#9fb7ff', '#c9a26b'];
-  c.lineWidth = 0.6;
+  // edges batched into a few paths by colour and strength (thousands of separate strokes are slow)
+  const paths = [new Path2D(), new Path2D(), new Path2D(), new Path2D(), new Path2D(), new Path2D()];
+  const addEdge = (wt, act, x0, y0, x1, y1) => {
+    const k = Math.min(2, Math.floor(act * Math.min(1, Math.abs(wt)) * 3)) + (wt > 0 ? 0 : 3);
+    paths[k].moveTo(x0, y0); paths[k].lineTo(x1, y1);
+  };
   for (let a = 0; a < inIdx.length; a++) {
     const act = Math.abs(inVals[a]); if (act < 0.01) continue;
-    for (let j = 0; j < nh; j++) {
-      const wt = w[O_IH + inIdx[a] * H_MAX + j]; if (!wt) continue;
-      c.strokeStyle = wt > 0 ? `rgba(143,227,184,${0.04 + act * Math.min(1, Math.abs(wt)) * 0.5})` : `rgba(255,138,138,${0.04 + act * Math.min(1, Math.abs(wt)) * 0.5})`;
-      c.beginPath(); c.moveTo(colX[0], ys(inIdx.length, a)); c.lineTo(colX[1], ys(nh, j)); c.stroke();
-    }
+    for (let j = 0; j < nh; j++) { const wt = w[O_IH + inIdx[a] * H_MAX + j]; if (wt) addEdge(wt, act, colX[0], ys(inIdx.length, a), colX[1], ys(nh, j)); }
   }
   for (let j = 0; j < nh; j++) for (let m = 0; m < N_OUT; m++) {
-    const wt = w[O_HO + j * N_OUT + m]; if (!wt) continue;
-    const act = Math.abs(hid[j]);
-    c.strokeStyle = wt > 0 ? `rgba(143,227,184,${0.05 + act * Math.min(1, Math.abs(wt)) * 0.6})` : `rgba(255,138,138,${0.05 + act * Math.min(1, Math.abs(wt)) * 0.6})`;
-    c.lineWidth = 0.4 + Math.min(2, Math.abs(wt));
-    c.beginPath(); c.moveTo(colX[1], ys(nh, j)); c.lineTo(colX[2], ys(N_OUT, m)); c.stroke();
+    const wt = w[O_HO + j * N_OUT + m]; if (wt) addEdge(wt, Math.abs(hid[j]), colX[1], ys(nh, j), colX[2], ys(N_OUT, m));
   }
+  const alphas = [0.08, 0.25, 0.55];
+  paths.forEach((p, k) => { c.strokeStyle = (k < 3 ? 'rgba(143,227,184,' : 'rgba(255,138,138,') + alphas[k % 3] + ')'; c.lineWidth = 0.6 + (k % 3) * 0.5; c.stroke(p); });
   c.font = '9px JetBrains Mono, monospace'; c.textBaseline = 'middle';
   const node = (x, y, v, r, rgb) => {
     c.fillStyle = '#0f1c26'; c.beginPath(); c.arc(x, y, r + 1.2, 0, 6.29); c.fill();

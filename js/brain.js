@@ -1,6 +1,6 @@
 // Loads the C++ brain (WebAssembly). If WebAssembly is unavailable, falls back
 // to a JavaScript port of the exact same math so the world still runs.
-import { N_IN, H_MAX, N_OUT, N_MEM, W_LEN, O_IH, O_HH, O_HO, O_BH, O_BO, OUT, CX_LEN, CX_NOBS, CX_OFF, CXD, CXT, CXH, CXFF, CXTH } from './genome.js';
+import { N_IN, H_MAX, N_OUT, N_MEM, W_LEN, O_IH, O_HH, O_HO, O_BH, O_BO, OUT, CX_LEN, CX_NOBS, CX_OFF, CXD, CXT, CXH, CXFF, CXTH } from './genome.js?v=6f9903a0547';
 
 const MAX_SLOTS = 1600;
 export const MAXC = 1600, MAXF = 12000;
@@ -11,13 +11,24 @@ const TH_IN = MEM_IN - CXTH;
 const MEMV = OUT.mem, GA = OUT.gateA, GB = OUT.gateB, VAL = OUT.value;
 
 export async function createBrain(wasmBytes) {
-  try {
-    let bytes = wasmBytes;
-    if (!bytes) {
-      const res = await fetch(new URL('../wasm/brain.wasm?v=6', import.meta.url));
-      if (!res.ok) throw new Error('no wasm');
-      bytes = await res.arrayBuffer();
-    }
+  // try the SIMD build first, then the plain build, then pure JavaScript
+  const sources = wasmBytes ? [wasmBytes] : ['../wasm/brain.wasm?v=6f9903a0547', '../wasm/brain-nosimd.wasm?v=6f9903a0547'];
+  for (const src of sources) {
+    try {
+      let bytes = src;
+      if (typeof src === 'string') {
+        const res = await fetch(new URL(src, import.meta.url));
+        if (!res.ok) throw new Error('no wasm');
+        bytes = await res.arrayBuffer();
+      }
+      const b = await instantiate(bytes);
+      b.kind = 'C++ / WebAssembly' + (typeof src === 'string' && src.includes('nosimd') ? '' : ' SIMD');
+      return b;
+    } catch (err) { /* try the next one */ }
+  }
+  return jsBrain();
+}
+async function instantiate(bytes) {
     const { instance } = await WebAssembly.instantiate(bytes, {});
     const e = instance.exports;
     if (e.w_len() !== W_LEN || e.max_slots() !== MAX_SLOTS || e.cx_len() !== CX_LEN || e.max_cx() !== MAX_CX) throw new Error('brain layout mismatch');
@@ -41,9 +52,6 @@ export async function createBrain(wasmBytes) {
       },
       senseAll: (nc, nf, W, H) => e.sense_all(nc, nf, W, H),
     });
-  } catch (err) {
-    return jsBrain();
-  }
 }
 
 class Brain {

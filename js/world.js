@@ -1,13 +1,13 @@
 // The world: terrain, climate, plants, trees, water life, 3D structures, creatures,
 // species and all the rules. Brains and vision run in C++/WebAssembly
 // (see js/brain.js, cpp/brain.cpp); the rest of the ecology lives here.
-import { TAU, rand, rr, ri, randn, chance, clamp, angleDiff, makeNoise, genusName, epithetName, pick } from './util.js';
+import { TAU, rand, rr, ri, randn, chance, clamp, angleDiff, makeNoise, genusName, epithetName, pick } from './util.js?v=6f9903a0547';
 import {
   randomGenome, mutate, reproduce, distance, brainStats,
   MAX_EYES, CH, N_IN, H_MAX, N_OUT, N_SENSE, S, OUT, W_LEN,
-} from './genome.js';
-import { Climate, WC } from './climate.js';
-import { MAXF } from './brain.js';
+} from './genome.js?v=6f9903a0547';
+import { Climate, WC } from './climate.js?v=6f9903a0547';
+import { MAXF } from './brain.js?v=6f9903a0547';
 
 export const RULES = {
   // [default, min, max, step, label, group, help]
@@ -65,7 +65,7 @@ export const RULES = {
   herbGain:      [1.0, 0.2, 3, 0.05, 'Plant nutrition ×', 'Life', 'Energy from plants and fruit.'],
   carnGain:      [1.0, 0.2, 3, 0.05, 'Meat nutrition ×', 'Life', 'Energy from hunting and scavenging.'],
   agingCost:     [1.0, 0, 3, 0.05, 'Aging ×', 'Life', 'How fast creatures grow old.'],
-  maxPop:        [650, 50, 1500, 10, 'Max creatures', 'Life', 'Hard cap on population.'],
+  maxPop:        [550, 50, 1500, 10, 'Max creatures', 'Life', 'Hard cap on population.'],
   autoSeed:      [1, 0, 1, 1, 'Auto re-seed', 'Life', 'If life dies out, new founders arrive.'],
   migration:     [1, 0, 1, 1, 'Migration', 'Life', 'If grazers or hunters vanish, a few migrants of that kind wander in.'],
 };
@@ -114,6 +114,7 @@ export class World {
     this.bHp = new Float32Array(this.bw * this.bh);   // health of the top block
     this.blockCount = 0;
     this.structVersion = 0;
+    this.dirtyCells = []; this.wallsAllDirty = true;
     this.market = { feed: [], prices: [], cur: 1, vol: 0, volNow: 0, sumP: 0, nP: 0, trades: 0, barters: 0, index: new Map() };
     this.social = { bullying: 0, defends: 0, gifts: 0, bonds: 0, roles: {} };
     this.genTerrain();
@@ -324,7 +325,7 @@ export class World {
       }
     }
     this.built++;
-    this.structVersion++;
+    this.structVersion++; this.dirtyCells.push(b);
     for (let k = 0; k < 3; k++) this.particles.push({ x: (bx + 0.5) * BS, y: (by + 0.5) * BS - this.bH[b] * 6, vx: randn() * 0.5, vy: randn() * 0.5 - 0.3, life: 18, hue: 35, s: 1.2 });
     const m = [25, 100, 300, 800, 2000].find((v) => sp.blocks >= v && sp.milestone < v);
     if (m) {
@@ -342,7 +343,7 @@ export class World {
     if (this.bH[b] === 0) { this.bOwner[b] = 0; this.bHp[b] = 0; }
     else this.bHp[b] = WALL_MAX_HP * 0.6;
     if (razed) this.razed++;
-    this.structVersion++;
+    this.structVersion++; this.dirtyCells.push(b);
   }
   decayBlocks() {
     const R = this.rules, n = this.bOwner.length, cl = this.climate;
@@ -481,12 +482,12 @@ export class World {
       f.age++;
       if (f.type === 0) {
         if (f.aqua) { if (f.e < f.max) f.e += 0.004 * f.max * (0.5 + this.season * 0.5); }
-        else if (f.e < f.max) {
-          const cc = cl.cellAt(f.x, f.y);
-          f.e += 0.005 * this.season * f.max * (0.25 + cl.moist[cc] * 1.4 + cl.ash[cc] * 0.8);
-          if (cl.moist[cc] < 0.08) f.e -= 0.02;    // drought withers
+        else if (f.e < f.max && ((f.age + f.v) & 3) === 0) {   // plants grow in 4-tick steps (cheaper, same rate)
+          const cc = f.cc ?? (f.cc = cl.cellAt(f.x, f.y));
+          f.e += 0.02 * this.season * f.max * (0.25 + cl.moist[cc] * 1.4 + cl.ash[cc] * 0.8);
+          if (cl.moist[cc] < 0.08) f.e -= 0.08;    // drought withers
         }
-        if (burning && !f.aqua && cl.fire[cl.cellAt(f.x, f.y)] > 0.25) f.e = 0;
+        if (burning && !f.aqua && cl.fire[f.cc ?? (f.cc = cl.cellAt(f.x, f.y))] > 0.25) f.e = 0;
       } else if (f.type === 1) {
         if (f.z > 0) { if (f.age > 4000) { f.z = 0; f.canopy = false; } }   // overripe canopy fruit falls
         else if (f.age > 2600) f.e -= 0.05;
@@ -496,6 +497,7 @@ export class World {
     }
     food.length = w; this.landPlants = lp; this.algaeN = al;
     if (t % 20 === 0) this.decayBlocks();
+    if (this.dirtyCells.length > 20000) { this.dirtyCells.length = 0; this.wallsAllDirty = true; }
 
     this.buildGrids();
     const cr = this.creatures, brain = this.brain, V = brain.V;
@@ -1090,7 +1092,7 @@ export class World {
     if (sp.count <= 0) {
       sp.extinct = this.tick;
       if (sp.peak > 4) this.log(`${sp.name} went extinct${sp.blocks > 20 ? ' — its walls fall to ruin' : ''}`, sp.hue);
-      if (sp.blocks > 0) { for (let b = 0; b < this.bOwner.length; b++) if (this.bOwner[b] === sp.id) this.bOwner[b] = -1; sp.blocks = 0; this.structVersion++; }
+      if (sp.blocks > 0) { for (let b = 0; b < this.bOwner.length; b++) if (this.bOwner[b] === sp.id) this.bOwner[b] = -1; sp.blocks = 0; this.structVersion++; this.wallsAllDirty = true; }
     }
     this.deaths++;
     const meat = 18 * c.g.size * c.g.size + Math.max(0, c.energy) * 0.4;

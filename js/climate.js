@@ -9,7 +9,7 @@
 //   p = p0 · fuel · dryness · e^(c_w · wind·dir) · e^(c_s · slope). Thunderstorms throw
 //   lightning; dry fuel ignites; fire runs downwind and uphill, rain puts it out,
 //   and the ash left behind fertilises the soil.
-import { TAU, rand, rr, ri, randn, chance, clamp, makeNoise } from './util.js';
+import { TAU, rand, rr, ri, randn, chance, clamp, makeNoise } from './util.js?v=6f9903a0547';
 
 export const WC = 32; // world units per climate cell
 
