@@ -37,6 +37,7 @@ export const RULES = {
   teamwork:      [1.0, 0, 3, 0.05, 'Teamwork bonus ×', 'Civilisation', 'Walls placed next to kin walls are stronger.'],
   stigmergy:     [1.0, 0, 2, 0.05, 'Stigmergy (termite instinct)', 'Civilisation', 'Like termites, builders lay blocks where kin walls already are, so lines and rooms grow instead of scattered bricks.'],
   wallsBlock:    [1, 0, 1, 1, 'Walls keep strangers out', 'Civilisation', 'Walls two or more blocks high stop other species (low fences can be climbed). Strangers must break through.'],
+  cortex:        [1, 0, 1, 1, 'Transformer cortex', 'Mind', 'A tiny transformer attends over each creature’s last 12 moments and feeds a “thought” to its brain. Lineages share one weight block until a mutation forks it.'],
   smartSelect:   [0, 0, 1, 1, 'Survival of the smartest', 'Mind', 'Every so often the weakest minds are purged and the smartest, most successful get energy to breed.'],
   selectHarsh:   [0.15, 0.02, 0.5, 0.01, 'Purge share', 'Mind', 'Fraction of each species removed in a purge (bottom by score).'],
   selectEvery:   [1500, 300, 6000, 100, 'Purge every (ticks)', 'Mind', 'How often survival of the smartest strikes.'],
@@ -459,6 +460,7 @@ export class World {
     this.season = R.seasons ? 1 + 0.65 * Math.sin((t / yearLen) * TAU) : 1;
     this.cold = (1 - this.light) * 0.8 + (R.seasons ? Math.max(0, 1 - this.season) * 1.2 : 0);
     const cl = this.climate;
+    this.brain.cortexOn = !!R.cortex;
     if (t % 32 === 0) cl.computeFuel();
     if (t % 8 === 0) cl.update(8);
 
@@ -534,6 +536,12 @@ export class World {
 
     if (t % 30 === 0) { this.computeGroups(); this.sample(); }
     if (t % 60 === 0) this.marketTick();
+    if (t % 300 === 0) {
+      // which transformer designs are winning?
+      let top = null; for (const cx of this.brain.designs) if (!top || cx.refs > top.refs) top = cx;
+      this.cortexTop = top;
+      if (top && top.refs >= 80 && top.gen > 0 && !top.logged) { top.logged = true; this.log(`A new cortex design (generation ${top.gen}) has spread to ${top.refs} minds`, 270); }
+    }
     if (t % 600 === 0) {
       const sick = cr.reduce((a, c) => a + (c.sick > 0 ? 1 : 0), 0);
       if (sick > 25 && !this._epidemic) { this._epidemic = true; this.log(`Epidemic! ${sick} creatures are sick`, 85); }

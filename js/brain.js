@@ -1,24 +1,26 @@
 // Loads the C++ brain (WebAssembly). If WebAssembly is unavailable, falls back
 // to a JavaScript port of the exact same math so the world still runs.
-import { N_IN, H_MAX, N_OUT, N_MEM, W_LEN, O_IH, O_HH, O_HO, O_BH, O_BO, OUT } from './genome.js';
+import { N_IN, H_MAX, N_OUT, N_MEM, W_LEN, O_IH, O_HH, O_HO, O_BH, O_BO, OUT, CX_LEN, CX_NOBS, CX_OFF, CXD, CXT, CXH, CXFF, CXTH } from './genome.js';
 
 const MAX_SLOTS = 1600;
 export const MAXC = 1600, MAXF = 12000;
 const TR_LEN = N_IN * H_MAX + H_MAX * N_OUT;
 const MEM_IN = N_IN - N_MEM;
+export const MAX_CX = 512;
+const TH_IN = MEM_IN - CXTH;
 const MEMV = OUT.mem, GA = OUT.gateA, GB = OUT.gateB, VAL = OUT.value;
 
 export async function createBrain(wasmBytes) {
   try {
     let bytes = wasmBytes;
     if (!bytes) {
-      const res = await fetch(new URL('../wasm/brain.wasm?v=5', import.meta.url));
+      const res = await fetch(new URL('../wasm/brain.wasm?v=6', import.meta.url));
       if (!res.ok) throw new Error('no wasm');
       bytes = await res.arrayBuffer();
     }
     const { instance } = await WebAssembly.instantiate(bytes, {});
     const e = instance.exports;
-    if (e.w_len() !== W_LEN || e.max_slots() !== MAX_SLOTS) throw new Error('brain layout mismatch');
+    if (e.w_len() !== W_LEN || e.max_slots() !== MAX_SLOTS || e.cx_len() !== CX_LEN || e.max_cx() !== MAX_CX) throw new Error('brain layout mismatch');
     const buf = e.memory.buffer;
     const f = (p, n) => new Float32Array(buf, p, n);
     const i = (p, n) => new Int32Array(buf, p, n);
@@ -29,6 +31,7 @@ export async function createBrain(wasmBytes) {
       NH: i(e.ptr_nh(), MAX_SLOTS), ETA: f(e.ptr_eta(), MAX_SLOTS), CUR: f(e.ptr_cur(), MAX_SLOTS),
       REWARD: f(e.ptr_reward(), MAX_SLOTS), DELTA: f(e.ptr_delta(), MAX_SLOTS), ACTIVE: i(e.ptr_active(), MAX_SLOTS),
       think: (n) => e.think(n), reset: (s) => e.reset_slot(s), imitate: (c, p, r) => e.imitate(c, p, r),
+      CXW: f(e.ptr_cxw(), MAX_CX * CX_LEN), CXID: i(e.ptr_cxid(), MAX_SLOTS), ATT: f(e.ptr_att(), MAX_SLOTS * CXH * CXT),
       V: {
         cx: f(e.v_cx(), MAXC), cy: f(e.v_cy(), MAXC), ca: f(e.v_ca(), MAXC), csz: f(e.v_csz(), MAXC), csig: f(e.v_csig(), MAXC),
         cv1: f(e.v_cv1(), MAXC), cv2: f(e.v_cv2(), MAXC), crange: f(e.v_crange(), MAXC), cfov: f(e.v_cfov(), MAXC), cdiet: f(e.v_cdiet(), MAXC),
@@ -48,6 +51,25 @@ class Brain {
     Object.assign(this, o);
     this.free = [];
     for (let s = MAX_SLOTS - 1; s >= 0; s--) this.free.push(s);
+    this.cxFree = [];
+    for (let b = MAX_CX - 1; b >= 0; b--) this.cxFree.push(b);
+    this.cortexOn = true;
+    this.designs = new Set();
+  }
+  // shared transformer blocks: one per design, reference-counted
+  attachCortex(cx) {
+    while (cx && cx.block < 0) {
+      const b = this.cxFree.pop();
+      if (b !== undefined) { cx.block = b; this.CXW.set(cx.w, b * CX_LEN); this.designs.add(cx); break; }
+      cx = cx.parent;               // pool full: fall back to the parent design
+    }
+    if (!cx) return null;
+    cx.refs++;
+    return cx;
+  }
+  detachCortex(cx) {
+    if (!cx || cx.block < 0) return;
+    if (--cx.refs <= 0) { this.cxFree.push(cx.block); cx.block = -1; cx.refs = 0; this.designs.delete(cx); }
   }
   alloc(g, weights) {
     const s = this.free.pop();
@@ -56,10 +78,21 @@ class Brain {
     this.NH[s] = g.hidden;
     this.ETA[s] = g.plastic * 0.1;
     this.CUR[s] = g.curiosity || 0;
+    const cx = this.cortexOn && g.cortex ? this.attachCortex(g.cortex) : null;
+    this.slotCx = this.slotCx || new Array(MAX_SLOTS);
+    this.slotCx[s] = cx;
+    this.CXID[s] = cx ? cx.block : -1;
     this.reset(s);
     return s;
   }
-  release(s) { if (s >= 0) this.free.push(s); }
+  release(s) {
+    if (s < 0) return;
+    if (this.slotCx && this.slotCx[s]) { this.detachCortex(this.slotCx[s]); this.slotCx[s] = null; }
+    this.CXID[s] = -1;
+    this.free.push(s);
+  }
+  cortexOf(s) { return this.slotCx ? this.slotCx[s] : null; }
+  attention(s) { return this.ATT.subarray(s * CXH * CXT, (s + 1) * CXH * CXT); }
   weights(s) { return this.W.subarray(s * W_LEN, (s + 1) * W_LEN); }
   inputs(s) { return this.IN.subarray(s * N_IN, (s + 1) * N_IN); }
   outputs(s) { return this.OUT.subarray(s * N_OUT, (s + 1) * N_OUT); }
@@ -79,11 +112,45 @@ function jsBrain() {
   const NH = new Int32Array(MAX_SLOTS), ETA = new Float32Array(MAX_SLOTS), CUR = new Float32Array(MAX_SLOTS), REWARD = new Float32Array(MAX_SLOTS);
   const VPREV = new Float32Array(MAX_SLOTS), DELTA = new Float32Array(MAX_SLOTS), ACTIVE = new Int32Array(MAX_SLOTS);
   const TMP = new Float32Array(H_MAX);
+  const CXW = new Float32Array(MAX_CX * CX_LEN), CXID = new Int32Array(MAX_SLOTS).fill(-1), ATT = new Float32Array(MAX_SLOTS * CXH * CXT);
+  const KR = new Float32Array(MAX_SLOTS * CXT * CXD), VR = new Float32Array(MAX_SLOTS * CXT * CXD);
+  const CTXN = new Int32Array(MAX_SLOTS), CTXH = new Int32Array(MAX_SLOTS), CXPH = new Int32Array(MAX_SLOTS);
+  const NSP = TH_IN - 30, O = CX_OFF, HD = CXD / CXH;
+  const rms = (x) => { let ss = 1e-5; for (const v of x) ss += v * v; const r = 1 / Math.sqrt(ss / x.length); return x.map((v) => v * r); };
+  function cortex(s) {
+    const W = CXID[s] * CX_LEN, ii = s * N_IN;
+    const obs = new Float32Array(CX_NOBS);
+    for (let c = 0; c < 5; c++) { let mx = 0; for (let e = 0; e < 6; e++) mx = Math.max(mx, Math.abs(IN[ii + e * 5 + c])); obs[c] = mx; }
+    for (let i = 0; i < NSP; i++) obs[5 + i] = IN[ii + 30 + i];
+    const x = new Float32Array(CXD);
+    for (let i = 0; i < CX_NOBS; i++) { const a = obs[i]; if (!a) continue; for (let d = 0; d < CXD; d++) x[d] += a * CXW[W + O.C_WIN + i * CXD + d]; }
+    const xn = rms(x), q = new Float32Array(CXD), k = new Float32Array(CXD), v = new Float32Array(CXD);
+    for (let d = 0; d < CXD; d++) for (let j = 0; j < CXD; j++) { q[d] += xn[j] * CXW[W + O.C_WQ + j * CXD + d]; k[d] += xn[j] * CXW[W + O.C_WK + j * CXD + d]; v[d] += xn[j] * CXW[W + O.C_WV + j * CXD + d]; }
+    const head = CTXH[s], kb = s * CXT * CXD;
+    for (let d = 0; d < CXD; d++) { KR[kb + head * CXD + d] = k[d]; VR[kb + head * CXD + d] = v[d]; }
+    CTXH[s] = (head + 1) % CXT; if (CTXN[s] < CXT) CTXN[s]++;
+    const n = CTXN[s], o = new Float32Array(CXD);
+    for (let h = 0; h < CXH; h++) {
+      const sc = []; let mx = -1e9;
+      for (let a = 0; a < n; a++) { const idx = (head - a + CXT) % CXT; let d0 = 0; for (let j = 0; j < HD; j++) d0 += q[h * HD + j] * KR[kb + idx * CXD + h * HD + j]; sc[a] = d0 / Math.sqrt(HD) + CXW[W + O.C_AGE + h * CXT + a]; mx = Math.max(mx, sc[a]); }
+      let sum = 0; for (let a = 0; a < n; a++) { sc[a] = Math.exp(sc[a] - mx); sum += sc[a]; }
+      ATT.fill(0, (s * CXH + h) * CXT, (s * CXH + h + 1) * CXT);
+      for (let a = 0; a < n; a++) { const p = sc[a] / sum, idx = (head - a + CXT) % CXT; ATT[(s * CXH + h) * CXT + a] = p; for (let j = 0; j < HD; j++) o[h * HD + j] += p * VR[kb + idx * CXD + h * HD + j]; }
+    }
+    const h1 = new Float32Array(CXD);
+    for (let d = 0; d < CXD; d++) { let a = 0; for (let j = 0; j < CXD; j++) a += o[j] * CXW[W + O.C_WO + j * CXD + d]; h1[d] = x[d] + a; }
+    let hn = rms(h1); const m = new Float32Array(CXFF), h2 = new Float32Array(CXD);
+    for (let f = 0; f < CXFF; f++) { let a = CXW[W + O.C_B1 + f]; for (let j = 0; j < CXD; j++) a += hn[j] * CXW[W + O.C_W1 + j * CXFF + f]; m[f] = Math.max(0, a); }
+    for (let d = 0; d < CXD; d++) { let a = 0; for (let f = 0; f < CXFF; f++) a += m[f] * CXW[W + O.C_W2 + f * CXD + d]; h2[d] = h1[d] + a; }
+    hn = rms(h2);
+    for (let t = 0; t < CXTH; t++) { let a = 0; for (let j = 0; j < CXD; j++) a += hn[j] * CXW[W + O.C_WOUT + j * CXTH + t]; IN[ii + TH_IN + t] = ftanh(a); }
+  }
   const ftanh = (x) => (x > 3 ? 1 : x < -3 ? -1 : (x * (27 + x * x)) / (27 + 9 * x * x));
   const cw = (v) => (v > 4 ? 4 : v < -4 ? -4 : v);
   function one(s) {
     const w = s * W_LEN, ii = s * N_IN, hh = s * H_MAX, mm = s * N_MEM, oo = s * N_OUT, nh = NH[s];
     for (let k = 0; k < N_MEM; k++) IN[ii + MEM_IN + k] = MEM[mm + k];
+    if (CXID[s] >= 0) { if ((CXPH[s]++ & 1) === 0) cortex(s); } else IN.fill(0, ii + TH_IN, ii + TH_IN + CXTH);
     for (let j = 0; j < nh; j++) {
       let a = W[w + O_BH + j];
       for (let i = 0; i < N_IN; i++) { const v = IN[ii + i]; if (v !== 0) a += v * W[w + O_IH + i * H_MAX + j]; }
@@ -170,11 +237,12 @@ function jsBrain() {
     }
   }
   return new Brain({
-    kind: 'JavaScript (fallback)', V, senseAll, W, TR, HS, MEM, IN, OUT: OUTv, NH, ETA, CUR, REWARD, DELTA, ACTIVE,
+    kind: 'JavaScript (fallback)', V, senseAll, CXW, CXID, ATT, W, TR, HS, MEM, IN, OUT: OUTv, NH, ETA, CUR, REWARD, DELTA, ACTIVE,
     think: (n) => { for (let k = 0; k < n; k++) one(ACTIVE[k]); },
     reset: (s) => {
       HS.fill(0, s * H_MAX, (s + 1) * H_MAX); HP.fill(0, s * H_MAX, (s + 1) * H_MAX); MEM.fill(0, s * N_MEM, (s + 1) * N_MEM);
       OUTv.fill(0, s * N_OUT, (s + 1) * N_OUT); TR.fill(0, s * TR_LEN, (s + 1) * TR_LEN); REWARD[s] = 0; VPREV[s] = 0; DELTA[s] = 0;
+      CTXN[s] = 0; CTXH[s] = 0; CXPH[s] = 0; IN.fill(0, s * N_IN + TH_IN, s * N_IN + TH_IN + CXTH); ATT.fill(0, s * CXH * CXT, (s + 1) * CXH * CXT);
     },
     imitate: (c, p, r) => {
       const wc = c * W_LEN, wp = p * W_LEN, nh = Math.min(NH[c], NH[p]);

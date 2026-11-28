@@ -6,6 +6,16 @@
 
 Brains are written in **C++ and compiled to WebAssembly**. Everything else is plain HTML, CSS and JavaScript, with no libraries. It works on phones too.
 
+## Transformer cortex (shared by pointer)
+
+On top of the learning brain, every creature has a tiny **transformer**, written in C++: one layer, two attention heads, width 16, and a feed-forward width of 32.
+
+- **Episodic memory:** each step, the creature's senses become one "moment", and its key and value are written into the creature's own ring buffer of the last 12 moments.
+- **Attention:** the newest moment attends back over that memory, using causal decoding, so only one position is computed (about 3k multiply-adds). A learned bias for each moment's age lets heads favour recent or older memories.
+- **Thought:** the result is an 8-number vector fed into the dopamine-learning brain as extra senses. The brain learns what those thoughts mean during the creature's life.
+- **Shared weights:** transformer weights live in a pool inside WebAssembly memory, and creatures hold a **pointer** to a block. Children share their parent's block (copy-on-write), and only a mutation forks a new block. A lineage's "inborn cortex" therefore costs one copy of memory however many members it has, and good designs spread by natural selection. Blocks are reference-counted and freed when the last user dies.
+- **Inspector:** the Creature tab shows the live attention pattern, the thought vector, and how many minds share the design.
+
 ## Genetics (as in nature, simplified)
 
 - **Diploid DNA:** every creature carries two chromosomes, one from each parent.

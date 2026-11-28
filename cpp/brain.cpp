@@ -19,11 +19,15 @@
 // Freestanding C++: no libc, no exceptions, just math on static arrays.
 
 #define MAX_SLOTS 1600
-#define N_IN 62
+#define N_IN 70
 #define H_MAX 32
 #define N_OUT 18
 #define N_MEM 4
 #define MEM_IN (N_IN - N_MEM)     // first memory input index
+#define N_TH 8                    // transformer 'thought' inputs, just before memory
+#define TH_IN (MEM_IN - N_TH)
+#define EYE_IN 30                 // 6 eyes x 5 channels
+#define N_SENSE_PLAIN (TH_IN - EYE_IN)  // body senses before the thought
 #define OUT_MEMV 11               // outputs 9..12 = memory values
 #define OUT_GATE_A 15             // gate for memories 0,1
 #define OUT_GATE_B 16             // gate for memories 2,3
@@ -53,6 +57,95 @@ static float DELTA[MAX_SLOTS];         // last prediction error (read by JS as "
 static int   ACTIVE[MAX_SLOTS];        // slots to evaluate this call
 static float TMP[H_MAX];
 
+// ---------------------------------------------------------------------------
+// Transformer cortex. A tiny one-layer, two-head transformer over each creature's
+// last T moments (episodic memory). Its weights live in a shared pool: a whole
+// lineage points at one block (copy-on-write: a mutation gives the child its own
+// copy). Each creature keeps only its own key/value memory of recent moments.
+// Only the newest position is computed (causal decoding), so each step costs ~3k MACs.
+// ---------------------------------------------------------------------------
+#define MAX_CX 512
+#define CD 16                         // model width
+#define CHEADS 2
+#define CHD (CD / CHEADS)             // head width
+#define CT 12                         // moments remembered
+#define CFF 32                        // feed-forward width
+#define NOBS (5 + N_SENSE_PLAIN)      // eye maxima per channel + body senses
+#define C_WIN 0
+#define C_WQ (C_WIN + NOBS * CD)
+#define C_WK (C_WQ + CD * CD)
+#define C_WV (C_WK + CD * CD)
+#define C_WO (C_WV + CD * CD)
+#define C_AGE (C_WO + CD * CD)
+#define C_W1 (C_AGE + CHEADS * CT)
+#define C_B1 (C_W1 + CD * CFF)
+#define C_W2 (C_B1 + CFF)
+#define C_WOUT (C_W2 + CFF * CD)
+#define CX_LEN (C_WOUT + CD * N_TH)
+
+static float CXW[MAX_CX * CX_LEN];    // shared weight pool
+static int   CXID[MAX_SLOTS];         // pointer: which block each creature uses (-1 = none)
+static float KR[MAX_SLOTS * CT * CD]; // per-creature key memory
+static float VR[MAX_SLOTS * CT * CD]; // per-creature value memory
+static int   CTXN[MAX_SLOTS], CTXH[MAX_SLOTS], CXPH[MAX_SLOTS];
+static float ATT[MAX_SLOTS * CHEADS * CT];  // last attention pattern (for the inspector)
+
+static inline float ftanh(float x);
+static inline float fexp(float x) {
+  if (x < -60.f) return 0.f;
+  if (x > 60.f) x = 60.f;
+  float t = x * 1.4426950f;
+  int i = (int)t; if (t < 0.f && (float)i != t) i -= 1;
+  float f = t - (float)i;
+  float p = 1.f + f * (0.6931472f + f * (0.2402265f + f * (0.0555041f + f * 0.0096181f)));
+  union { float f; int i; } u; u.i = (i + 127) << 23;
+  return p * u.f;
+}
+static inline void rmsnorm(const float* x, float* o, int n) {
+  float ss = 1e-5f; for (int i = 0; i < n; i++) ss += x[i] * x[i];
+  float r = 1.f / __builtin_sqrtf(ss / n); for (int i = 0; i < n; i++) o[i] = x[i] * r;
+}
+static void cortex(int s, float* in) {
+  const float* W = CXW + CXID[s] * CX_LEN;
+  float obs[NOBS], x[CD], xn[CD], q[CD], k[CD], v[CD], o[CD], h1[CD], hn[CD], m[CFF], h2[CD];
+  for (int c = 0; c < 5; c++) { float mx = 0.f; for (int e = 0; e < 6; e++) { float a = in[e * 5 + c]; if (a < 0.f) a = -a; if (a > mx) mx = a; } obs[c] = mx; }
+  for (int i = 0; i < N_SENSE_PLAIN; i++) obs[5 + i] = in[EYE_IN + i];
+  for (int d = 0; d < CD; d++) x[d] = 0.f;
+  for (int i = 0; i < NOBS; i++) { const float a = obs[i]; if (a == 0.f) continue; const float* w = W + C_WIN + i * CD; for (int d = 0; d < CD; d++) x[d] += a * w[d]; }
+  rmsnorm(x, xn, CD);
+  for (int d = 0; d < CD; d++) { float aq = 0.f, ak = 0.f, av = 0.f; for (int j = 0; j < CD; j++) { const float a = xn[j]; aq += a * W[C_WQ + j * CD + d]; ak += a * W[C_WK + j * CD + d]; av += a * W[C_WV + j * CD + d]; } q[d] = aq; k[d] = ak; v[d] = av; }
+  // write this moment into the creature's memory ring
+  int head = CTXH[s];
+  float* K = KR + s * CT * CD; float* Vv = VR + s * CT * CD;
+  for (int d = 0; d < CD; d++) { K[head * CD + d] = k[d]; Vv[head * CD + d] = v[d]; }
+  CTXH[s] = (head + 1) % CT; if (CTXN[s] < CT) CTXN[s]++;
+  const int n = CTXN[s];
+  const float scale = 0.35355339f; // 1/sqrt(8)
+  for (int h = 0; h < CHEADS; h++) {
+    float sc[CT]; float mx = -1e9f;
+    for (int a = 0; a < n; a++) {           // a = age: 0 is now
+      const int idx = (head - a + CT) % CT;
+      float d0 = 0.f; for (int j = 0; j < CHD; j++) d0 += q[h * CHD + j] * K[idx * CD + h * CHD + j];
+      sc[a] = d0 * scale + W[C_AGE + h * CT + a];
+      if (sc[a] > mx) mx = sc[a];
+    }
+    float sum = 0.f; for (int a = 0; a < n; a++) { sc[a] = fexp(sc[a] - mx); sum += sc[a]; }
+    for (int j = 0; j < CHD; j++) o[h * CHD + j] = 0.f;
+    for (int a = 0; a < CT; a++) ATT[(s * CHEADS + h) * CT + a] = 0.f;
+    for (int a = 0; a < n; a++) {
+      const float p = sc[a] / sum; const int idx = (head - a + CT) % CT;
+      ATT[(s * CHEADS + h) * CT + a] = p;
+      for (int j = 0; j < CHD; j++) o[h * CHD + j] += p * Vv[idx * CD + h * CHD + j];
+    }
+  }
+  for (int d = 0; d < CD; d++) { float a = 0.f; for (int j = 0; j < CD; j++) a += o[j] * W[C_WO + j * CD + d]; h1[d] = x[d] + a; }
+  rmsnorm(h1, hn, CD);
+  for (int f = 0; f < CFF; f++) { float a = W[C_B1 + f]; for (int j = 0; j < CD; j++) a += hn[j] * W[C_W1 + j * CFF + f]; m[f] = a > 0.f ? a : 0.f; }
+  for (int d = 0; d < CD; d++) { float a = 0.f; for (int f = 0; f < CFF; f++) a += m[f] * W[C_W2 + f * CD + d]; h2[d] = h1[d] + a; }
+  rmsnorm(h2, hn, CD);
+  for (int t = 0; t < N_TH; t++) { float a = 0.f; for (int j = 0; j < CD; j++) a += hn[j] * W[C_WOUT + j * N_TH + t]; in[TH_IN + t] = ftanh(a); }
+}
+
 static inline float ftanh(float x) {
   if (x > 3.f) return 1.f;
   if (x < -3.f) return -1.f;
@@ -78,6 +171,11 @@ float* ptr_delta() { return DELTA; }
 int*   ptr_active() { return ACTIVE; }
 int    w_len() { return W_LEN; }
 int    max_slots() { return MAX_SLOTS; }
+float* ptr_cxw() { return CXW; }
+int*   ptr_cxid() { return CXID; }
+float* ptr_att() { return ATT; }
+int    cx_len() { return CX_LEN; }
+int    max_cx() { return MAX_CX; }
 
 void reset_slot(int s) {
   for (int i = 0; i < H_MAX; i++) { HS[s * H_MAX + i] = 0.f; HP[s * H_MAX + i] = 0.f; }
@@ -86,6 +184,9 @@ void reset_slot(int s) {
   float* tr = TR + s * TR_LEN;
   for (int i = 0; i < TR_LEN; i++) tr[i] = 0.f;
   REWARD[s] = 0.f; VPREV[s] = 0.f; DELTA[s] = 0.f;
+  CTXN[s] = 0; CTXH[s] = 0; CXPH[s] = 0;
+  for (int t = 0; t < N_TH; t++) IN[s * N_IN + TH_IN + t] = 0.f;
+  for (int i = 0; i < CHEADS * CT; i++) ATT[s * CHEADS * CT + i] = 0.f;
 }
 
 static void think_one(int s) {
@@ -98,6 +199,9 @@ static void think_one(int s) {
   const int nh = NH[s];
 
   for (int k = 0; k < N_MEM; k++) in[MEM_IN + k] = mem[k];
+  // the cortex thinks every other step; its thought stays in the input row in between
+  if (CXID[s] >= 0) { if ((CXPH[s]++ & 1) == 0) cortex(s, in); }
+  else for (int t = 0; t < N_TH; t++) in[TH_IN + t] = 0.f;
 
   // hidden layer (recurrent)
   for (int j = 0; j < nh; j++) {

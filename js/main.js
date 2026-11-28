@@ -97,6 +97,7 @@ function updateHUD() {
     `<span class="chip opt"><span class="k">Groups</span><b>${w.groups.length}</b></span>`,
     w.sickCount > 5 ? `<span class="chip opt"><span class="dot" style="background:#b6dc3c"></span><span class="k">Sick</span><b>${w.sickCount}</b></span>` : '',
     `<span class="chip opt"><span class="k">IQ</span><b>${iq.toFixed(0)}</b></span>`,
+    state.brain.cortexOn ? `<span class="chip opt"><span class="k">🧠 cortex designs</span><b>${state.brain.designs.size}</b></span>` : '',
     `<span class="chip opt"><span class="k">Plants</span><b>${fmt(w.food.length)}</b></span>`,
   ].join('');
 }
@@ -339,6 +340,28 @@ function updateInspector() {
     bar('Genes mixed', heterozygosity(c.g), 1, '#a0e0d0', Math.round(heterozygosity(c.g) * 100) + '% heterozygous');
   $('#ciBrain').textContent = `${c.brain.neurons} neurons · ${c.brain.synapses} synapses · IQ ${c.brain.iq} · ${state.brain.kind.split(' ')[0]}`;
   drawBrain(c);
+  drawAttention(c);
+}
+function drawAttention(cr) {
+  const cv = $('#attnCanvas'); if (!cv.clientWidth) return;
+  const [c, W, H] = sizeCanvas(cv); c.clearRect(0, 0, W, H);
+  const B = state.brain, cx = B.cortexOf(cr.slot);
+  if (!cx) { $('#ciCortex').textContent = 'off'; c.fillStyle = '#9fb3a9'; c.font = '12px Space Grotesk'; c.fillText('No cortex (turned off in Rules → Mind).', 8, 20); return; }
+  $('#ciCortex').textContent = `design #${cx.id} · gen ${cx.gen} · shared by ${cx.refs} mind${cx.refs === 1 ? '' : 's'}`;
+  const att = B.attention(cr.slot), T = 12, cw = (W - 40) / T, rh = 22;
+  c.font = '10px JetBrains Mono, monospace'; c.textBaseline = 'middle';
+  for (let h = 0; h < 2; h++) {
+    c.fillStyle = '#9fb3a9'; c.fillText(`h${h + 1}`, 4, 10 + h * (rh + 4) + rh / 2);
+    for (let a = 0; a < T; a++) {
+      const p = att[h * T + a];
+      c.fillStyle = `rgba(${h ? '159,183,255' : '255,199,138'},${0.06 + Math.min(1, p * 2.2)})`;
+      c.fillRect(34 + a * cw, 10 + h * (rh + 4), cw - 2, rh);
+    }
+  }
+  const th = B.inputs(cr.slot).subarray(SENSE_NAMES.indexOf('th1') + MAX_EYES * CH, SENSE_NAMES.indexOf('th1') + MAX_EYES * CH + 8);
+  c.fillStyle = '#9fb3a9'; c.fillText('th', 4, 74);
+  const tw = (W - 40) / 8;
+  th.forEach((v, i) => { c.fillStyle = v >= 0 ? `rgba(143,227,184,${0.15 + Math.abs(v) * 0.85})` : `rgba(255,138,138,${0.15 + Math.abs(v) * 0.85})`; c.fillRect(34 + i * tw, 66, tw - 2, 16); });
 }
 function drawBrain(cr) {
   const cv = $('#brainCanvas'); if (!cv.clientWidth) return;

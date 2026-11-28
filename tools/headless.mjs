@@ -21,6 +21,7 @@ for (let i = 1; i <= T; i++) {
     console.log(`${i} pop ${w.creatures.length} (grz ${h.herb} hunt ${h.carn} fish ${h.fish}) plants ${w.landPlants} algae ${w.algaeN} sp ${alive}/${w.species.size} gen ${w.maxGen}`
       + ` | iq ${a.iq.toFixed(0)} neur ${a.hidden.toFixed(1)} learn ${a.learned.toFixed(3)} voice ${a.voice.toFixed(2)}`
       + ` | blocks ${w.blockCount} tallest ${tall} z ${a.height.toFixed(2)} shelter ${a.shelter.toFixed(2)} | fur ${a.fur.toFixed(2)} hab ${a.habitat.toFixed(2)}`
+      + ` | cortex designs ${brain.designs.size} top ${w.cortexTop ? w.cortexTop.refs + '@g' + w.cortexTop.gen : '-'}`
       + ` | ${w.climate.state} moist ${w.climate.landMoist.toFixed(2)} fire ${w.climate.burning} trees ${w.trees.length} | ${((Date.now() - t0) / i).toFixed(2)} ms/tick`);
   }
 }

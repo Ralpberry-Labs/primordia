@@ -9,7 +9,7 @@ export PATH="/opt/homebrew/opt/lld/bin:$PATH"
   -Wl,--no-entry -Wl,--export-dynamic -Wl,--strip-all \
   -Wl,--export=ptr_w,--export=ptr_tr,--export=ptr_h,--export=ptr_mem,--export=ptr_in,--export=ptr_out \
   -Wl,--export=ptr_nh,--export=ptr_eta,--export=ptr_cur,--export=ptr_reward,--export=ptr_delta,--export=ptr_active \
-  -Wl,--export=w_len,--export=max_slots,--export=reset_slot,--export=think,--export=imitate \
+  -Wl,--export=w_len,--export=max_slots,--export=reset_slot,--export=think,--export=imitate,--export=ptr_cxw,--export=ptr_cxid,--export=ptr_att,--export=cx_len,--export=max_cx \
   -Wl,--export=sense_all,--export=v_cx,--export=v_cy,--export=v_ca,--export=v_csz,--export=v_csig,--export=v_cv1,--export=v_cv2 \
   -Wl,--export=v_crange,--export=v_cfov,--export=v_cdiet,--export=v_csp,--export=v_cslot,--export=v_ceyes,--export=v_cthink \
   -Wl,--export=v_fx,--export=v_fy,--export=v_fe,--export=v_ft,--export=v_heard,--export=v_ov1,--export=v_ov2,--export=v_crowd \

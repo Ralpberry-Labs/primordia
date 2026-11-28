@@ -7,8 +7,8 @@ export const CH_NAMES = ['🌿', 'prey', 'thr', 'kin', 'wall'];
 export const N_MEM = 4;                 // gated long-term memory cells (handled in C++)
 export const SENSE_NAMES = ['energy', 'health', 'age', 'clock', 'bias', 'glow', 'pain', 'speed', 'crowd',
   'carry', 'shelter', 'home↺', 'home↑', 'home', 'builders', 'family', 'reward',
-  'voice1', 'voice2', 'temp', 'water', 'fire', 'surprise', 'height', 'wallet', 'stash', 'friend', 'friendHurt', 'mem1', 'mem2', 'mem3', 'mem4'];
-export const N_SENSE = SENSE_NAMES.length;           // 32 (last 4 are memory, filled by the brain)
+  'voice1', 'voice2', 'temp', 'water', 'fire', 'surprise', 'height', 'wallet', 'stash', 'friend', 'friendHurt', 'th1', 'th2', 'th3', 'th4', 'th5', 'th6', 'th7', 'th8', 'mem1', 'mem2', 'mem3', 'mem4'];
+export const N_SENSE = SENSE_NAMES.length;           // 40 (last 12: transformer thoughts + memory, filled by the brain; are memory, filled by the brain)
 export const S = Object.fromEntries(SENSE_NAMES.map((n, i) => [n, i]));
 export const N_IN = MAX_EYES * CH + N_SENSE;         // 62
 export const H_MAX = 32;
@@ -16,6 +16,33 @@ export const OUT_NAMES = ['move', 'turn', 'bite', 'glow', 'share', 'breed', 'bui
   'mem1←', 'mem2←', 'mem3←', 'mem4←', 'gate A', 'gate B', 'value'];
 export const N_OUT = OUT_NAMES.length;               // 18
 export const OUT = { move: 0, turn: 1, bite: 2, signal: 3, share: 4, breed: 5, build: 6, voice1: 7, voice2: 8, trade: 9, price: 10, mem: 11, gateA: 15, gateB: 16, value: 17 };
+
+// Transformer cortex (see cpp/brain.cpp): shared weight blocks, copy-on-write.
+export const CXD = 16, CXT = 12, CXH = 2, CXFF = 32, CXTH = 8;
+export const CX_NOBS = 5 + (N_SENSE - 4 - CXTH);
+const C_WIN = 0, C_WQ = C_WIN + CX_NOBS * CXD, C_WK = C_WQ + CXD * CXD, C_WV = C_WK + CXD * CXD, C_WO = C_WV + CXD * CXD;
+const C_AGE = C_WO + CXD * CXD, C_W1 = C_AGE + CXH * CXT, C_B1 = C_W1 + CXD * CXFF, C_W2 = C_B1 + CXFF, C_WOUT = C_W2 + CXFF * CXD;
+export const CX_OFF = { C_WIN, C_WQ, C_WK, C_WV, C_WO, C_AGE, C_W1, C_B1, C_W2, C_WOUT };
+export const CX_LEN = C_WOUT + CXD * CXTH;
+let _cxid = 1;
+function randomCortexWeights() {
+  const w = new Float32Array(CX_LEN);
+  const fill = (o, n, sd) => { for (let i = 0; i < n; i++) w[o + i] = randn() * sd; };
+  fill(C_WIN, CX_NOBS * CXD, 1 / Math.sqrt(CX_NOBS) * 1.5);
+  fill(C_WQ, CXD * CXD, 0.25); fill(C_WK, CXD * CXD, 0.25); fill(C_WV, CXD * CXD, 0.25); fill(C_WO, CXD * CXD, 0.2);
+  for (let h = 0; h < CXH; h++) for (let a = 0; a < CXT; a++) w[C_AGE + h * CXT + a] = -0.15 * a * (h + 1) + randn() * 0.1; // recency bias
+  fill(C_W1, CXD * CXFF, 0.25); fill(C_W2, CXFF * CXD, 0.12); fill(C_WOUT, CXD * CXTH, 0.5);
+  return w;
+}
+export function newCortex() { return { id: _cxid++, w: randomCortexWeights(), block: -1, refs: 0, parent: null, gen: 0 }; }
+export function mutateCortex(c, amt = 1) {
+  const w = Float32Array.from(c.w);
+  for (let i = 0; i < CX_LEN; i++) {
+    if (chance(0.05)) w[i] += randn() * 0.08 * amt;
+    else if (chance(0.0015)) w[i] = randn() * 0.3;
+  }
+  return { id: _cxid++, w, block: -1, refs: 0, parent: c, gen: c.gen + 1 };
+}
 
 // weight layout inside one Float32Array
 export const O_IH = 0;
@@ -123,6 +150,7 @@ export function randomGenome(opts = {}) {
   // faint urge to swap surplus food (and to buy when hungry); prices are left to learning
   if (g.hidden < 5) g.hidden = 5;
   g.w[O_BO + OUT.trade] = rr(-0.3, 0.6);   // a mild, varied lean toward trading; the rest is learned
+  g.cortex = newCortex();
   return encode(g);
 }
 
@@ -235,6 +263,9 @@ export function reproduce(p1, p2, rateMul = 1, amtMul = 1, growBias = 0.5) {
       g.w[O_BH + j] = p2.w[O_BH + j];
     }
   }
+  // transformer cortex: inherited by pointer (shared), copied only when a mutation hits it
+  g.cortex = p2 && chance(0.5) ? p2.cortex : p1.cortex;
+  if (g.cortex && chance(rate * 0.3)) g.cortex = mutateCortex(g.cortex, amt);
   // neuron number: gene duplication adds a copy of an existing neuron (splitting its
   // output so behaviour is unchanged at first); deletion drops the last one
   if (chance(rate * 0.5)) {
@@ -322,11 +353,18 @@ export function brainStats(g) {
 export function serializeGenome(g) {
   const d = g.dna;
   return { ...g, body: Array.from(g.body), pattern: Array.from(g.pattern), w: Array.from(g.w, (x) => Math.round(x * 1000) / 1000),
+    cortex: g.cortex ? { id: g.cortex.id, w: Array.from(g.cortex.w, (x) => Math.round(x * 1000) / 1000) } : null,
     dna: { A: Array.from(d.A), B: Array.from(d.B), bodyA: Array.from(d.bodyA), bodyB: Array.from(d.bodyB), patA: Array.from(d.patA), patB: Array.from(d.patB) } };
 }
 export function deserializeGenome(o) {
   const g = { ...o, id: _gid++ };
   g.w = Float32Array.from(o.w);
+  if (o.cortex) {
+    const cache = deserializeGenome.cx || (deserializeGenome.cx = new Map());
+    let cx = cache.get(o.cortex.id);
+    if (!cx) { cx = { id: _cxid++, w: Float32Array.from(o.cortex.w), block: -1, refs: 0, parent: null, gen: 0 }; cache.set(o.cortex.id, cx); }
+    g.cortex = cx;
+  } else g.cortex = newCortex();
   if (o.dna) {
     g.dna = { A: Float32Array.from(o.dna.A), B: Float32Array.from(o.dna.B), bodyA: Uint8Array.from(o.dna.bodyA), bodyB: Uint8Array.from(o.dna.bodyB), patA: Uint8Array.from(o.dna.patA), patB: Uint8Array.from(o.dna.patB) };
     express(g);
